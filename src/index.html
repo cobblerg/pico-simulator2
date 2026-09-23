@@ -1,0 +1,138 @@
+<title>PicoSim 가상 피코</title>
+<meta name="description" content="실물과 같은 MicroPython 펌웨어가 돌아가는 가상 라즈베리파이 피코">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;500;700&family=Fira+Code:wght@400;500&display=swap">
+<style>/*__CSS__*/</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>PicoSim</h1>
+        <p class="sub">가상 RP2040 · <span id="fw-ver">MicroPython</span> · 실물과 같은 펌웨어</p>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="화면">
+      <button class="tab" role="tab" data-tab="sim" aria-selected="true" type="button">가상 실습</button>
+      <button class="tab" role="tab" data-tab="bridge" aria-selected="false" type="button">실물로 옮기기</button>
+    </nav>
+    <div class="top-right">
+      <button id="sound" class="btn ghost small" type="button" aria-pressed="false"><i class="ico-sound" aria-hidden="true"></i><span>소리 끔</span></button>
+      <span id="engine-status" class="status boot" role="status"><i aria-hidden="true"></i><span>켜는 중</span></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 가상 실습 -->
+    <section id="view-sim" class="view-sim">
+      <aside class="side">
+        <div class="card mission">
+          <h2 class="eyebrow">미션</h2>
+          <div id="mission-list" class="mission-list"></div>
+          <h3 id="m-title"></h3>
+          <p id="m-goal" class="goal"></p>
+          <div id="needs" class="needs"></div>
+          <p class="hint"><b>힌트</b> <span id="m-hint"></span></p>
+        </div>
+        <div class="card">
+          <h2 class="eyebrow">코드 블록 <small>누르거나 에디터로 끌기</small></h2>
+          <div id="blocks" class="blocks"></div>
+        </div>
+      </aside>
+
+      <section class="bench">
+        <div class="bench-head">
+          <div>
+            <h2 class="eyebrow">부품 <small>핀으로 끌어다 놓거나 누르세요</small></h2>
+          </div>
+        </div>
+        <div id="palette" class="palette"></div>
+        <div id="board" class="board"></div>
+        <div id="pinstrip" class="pinstrip" aria-label="핀 상태"></div>
+        <div id="inspector" class="inspector"></div>
+      </section>
+    </section>
+
+    <!-- 실물로 옮기기 -->
+    <section id="view-bridge" class="view-bridge" hidden>
+      <div class="bridge-intro">
+        <h2>가상에서 통과한 코드를, 한 글자도 바꾸지 않고 실물로</h2>
+        <p>가상 피코는 실물 칩(RP2040)을 흉내 내고, 그 위에서 실물과 <b>같은 MicroPython 펌웨어</b>를 실행해요. 그래서 코드·출력·오류 메시지가 실물과 똑같습니다. 다른 것은 <b>배선</b>뿐이에요.</p>
+      </div>
+
+      <ol class="steps">
+        <li class="step">
+          <div class="step-head"><span class="step-no">1</span><h3>펌웨어 맞추기</h3></div>
+          <p id="fw-note"></p>
+          <ol class="howto">
+            <li>피코의 <b>BOOTSEL</b> 버튼을 누른 채로 USB를 꽂으세요.</li>
+            <li>컴퓨터에 <b>RPI-RP2</b> 드라이브가 나타나면 .uf2 파일을 끌어다 놓으세요.</li>
+            <li>드라이브가 사라지고 피코가 재시작되면 끝이에요.</li>
+          </ol>
+          <div class="row">
+            <button id="fw-dl" class="btn" type="button" hidden>펌웨어(.uf2) 받기</button>
+            <a class="btn ghost" href="https://micropython.org/download/RPI_PICO/" target="_blank" rel="noopener">공식 다운로드 페이지</a>
+          </div>
+          <p class="note"><b>Pico W</b>를 쓴다면 Pico W 전용 펌웨어(RPI_PICO_W)를 설치하세요. 내장 LED는 두 보드 모두 <code>Pin("LED")</code>로 쓰면 코드를 바꿀 필요가 없어요.</p>
+        </li>
+
+        <li class="step">
+          <div class="step-head"><span class="step-no">2</span><h3>배선표</h3></div>
+          <p>가상 보드에 꽂은 부품을 실물 핀 번호로 바꿨어요. 핀 번호는 피코 윗면, USB를 위로 두고 왼쪽 위가 1번이에요.</p>
+          <div id="wiring"></div>
+        </li>
+
+        <li class="step">
+          <div class="step-head"><span class="step-no">3</span><h3>실물 점검</h3></div>
+          <p>가상에서는 일어나지 않지만 실물에서는 자주 생기는 문제예요. 전원을 넣기 전에 확인하세요.</p>
+          <ul id="checklist" class="checklist"></ul>
+        </li>
+
+        <li class="step">
+          <div class="step-head"><span class="step-no">4</span><h3>실물 피코에서 실행</h3><span id="real-state" class="chip disconnected">연결 안 됨</span></div>
+          <p>오른쪽 에디터의 코드를 그대로 보내요. 결과는 콘솔에 <span class="real-tag">실물</span> 색으로 나와서 가상 결과와 비교할 수 있어요.</p>
+          <div class="row">
+            <button id="real-connect" class="btn" type="button">피코 연결</button>
+            <button id="real-run" class="btn run" type="button" disabled>▶ 실물에서 실행</button>
+            <button id="real-stop" class="btn ghost" type="button" disabled>■ 정지</button>
+            <button id="real-save" class="btn ghost" type="button" disabled>main.py로 저장</button>
+          </div>
+          <p id="real-msg" class="msg" role="status"></p>
+          <p class="note"><b>main.py로 저장</b>하면 컴퓨터 없이 전원만 연결해도 코드가 실행돼요. 연결이 안 되면 Thonny를 닫고 다시 시도하세요.</p>
+          <div class="row">
+            <button id="copy-code" class="btn ghost" type="button">코드 복사 (Thonny용)</button>
+            <button id="main-dl" class="btn ghost" type="button" hidden>main.py 받기</button>
+          </div>
+          <textarea id="copy-fallback" class="copy-fallback" rows="6" hidden aria-label="복사할 코드"></textarea>
+        </li>
+      </ol>
+    </section>
+
+    <!-- 코드 (두 화면 공통) -->
+    <section class="code-col">
+      <div class="code-head">
+        <h2 class="eyebrow">main.py <small>MicroPython</small></h2>
+        <div class="row">
+          <button id="run" class="btn run" type="button" disabled>▶ 실행</button>
+          <button id="stop" class="btn ghost" type="button" disabled>■ 정지</button>
+          <button id="reset" class="btn ghost" type="button" title="전원을 뽑았다 꽂는 것과 같아요">↺ 리셋</button>
+        </div>
+      </div>
+      <div id="check" class="check" hidden></div>
+      <div id="editor" class="editor"></div>
+      <div class="shell-head">
+        <h2 class="eyebrow">셸 <small>Thonny 셸과 같아요</small></h2>
+        <button id="clear" class="btn ghost small" type="button">지우기</button>
+      </div>
+      <pre id="console" class="console" aria-live="polite"></pre>
+      <form id="repl-form" class="repl">
+        <label for="repl-in" class="prompt">&gt;&gt;&gt;</label>
+        <input id="repl-in" autocomplete="off" spellcheck="false" placeholder="파이썬 한 줄 입력 (예: 1+1) · input() 답하기">
+      </form>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="alert" hidden></div>
+</div>
+<script>/*__JS__*/</script>
