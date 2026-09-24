@@ -5,6 +5,7 @@ import { BoardView } from './board';
 import { createEditor } from './editor';
 import { Mission, Part, PartKind, PART_INFO, PINS, pinByGp, nearestPin, LED_COLORS, LED_COLOR_NAMES, ERROR_HELP } from './data';
 import { getSimulatorMissions, getMissionById, getMissionIndex, getDefaultMission } from './content-access';
+import type { CheckpointEvaluationContext } from './checkpoint';
 import {
   Activity, activityFor, defaultActivity, isCustomized, saveActivity, resetActivity,
   loadWorkspace, saveWorkspace, startWorkspace, newId,
@@ -568,6 +569,24 @@ function showCheck(ok: boolean, msg: string) {
 
 function missingParts() {
   return mission.needs.filter((n) => !parts.some((p) => p.kind === n.kind && p.gp === n.gp));
+}
+
+// ---------- 0-C3-A: checkpoint evaluator용 context adapter (아직 미사용) ----------
+// checkAtEnd/checkLive에 흩어진 실제 상태(runEdges/runPins/runStdout/parts/pins)를
+// checkpoint-evaluator.ts가 요구하는 최소 snapshot으로 변환한다. 원본 배열/Map은
+// 하나도 mutate하지 않고 항상 새 배열/Set/Map을 만들어 반환한다.
+// 이 함수는 아직 어디에서도 호출되지 않는다 — checkAtEnd/checkLive는 계속
+// 자체 하드코딩 로직으로 판정한다(0-C3-A는 evaluator를 연결하지 않는다).
+function buildCheckpointContext(): CheckpointEvaluationContext {
+  return {
+    edges: runEdges.map(([pin, level, atMs]) => ({ pin, level: level as 0 | 1, atMs })),
+    // runPins는 { gp, freq, duty } 모양이지만 PwmSample은 { pin, freq, duty }다 —
+    // gp -> pin으로 이름을 명시적으로 바꾼다 (구조적으로 우연히 맞는 필드가 아니므로 누락되기 쉬운 지점).
+    pwmSamples: runPins.map(({ gp, freq, duty }) => ({ pin: gp, freq, duty })),
+    stdout: runStdout,
+    pressedInputs: new Set(parts.filter((p) => p.pressed).map((p) => p.gp)),
+    pins: new Map([...pins].map(([gp, r]) => [gp, { mode: r.mode, level: r.level }])),
+  };
 }
 
 function checkAtEnd(ok: boolean) {
