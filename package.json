@@ -4,6 +4,7 @@
   "description": "가상 RP2040 칩 위에서 실물과 같은 MicroPython 펌웨어를 실행하는 피코 시뮬레이터",
   "main": "index.js",
   "scripts": {
+    "start": "node server.mjs",
     "build": "node build.mjs"
   },
   "keywords": [],
