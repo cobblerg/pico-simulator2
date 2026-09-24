@@ -655,11 +655,22 @@ function checkLive() {
       // 'pending'이면 기존과 동일하게 UI를 바꾸지 않는다(새 pending UI를 만들지 않음).
     }
   } else if (mission.id === 'm4') {
-    const nums = (runStdout.match(/-?\d+(\.\d+)?/g) || []).map(Number);
-    if (nums.length >= 2) {
-      const span = Math.max(...nums) - Math.min(...nums);
-      const big = Math.max(...nums) > 10 ? 3000 : 0.15;
-      if (span >= big) showCheck(true, `값이 ${Math.min(...nums)} ~ ${Math.max(...nums)} 사이에서 바뀌었어요.`);
+    // 성공 여부(숫자 파싱/범위 판정)의 유일한 판정기는 evaluateCheckpoint의
+    // stdout-range rule이다 — 여기서 정규식 파싱이나 범위 계산을 다시 하지 않는다.
+    // 이 rule은 runtime state가 필요 없으므로 checkpointState를 쓰지 않는다.
+    const cps = selectCheckpoints(mission, 'live');
+    if (!cps.length) return; // checkpoint 없음 = fail-closed(아무 UI 변화 없음)
+    const ctx = buildCheckpointContext();
+    for (const cp of cps) {
+      const { result } = evaluateCheckpoint(cp.rule, ctx);
+      if (result.status === 'passed') {
+        // 아래 조회는 판정에 쓰지 않는다 — 이미 확정된 결과를 기존 메시지에
+        // 표시할 값(최소/최대)을 고르기 위한 조회일 뿐이다.
+        const nums = (runStdout.match(/-?\d+(\.\d+)?/g) || []).map(Number);
+        showCheck(true, `값이 ${Math.min(...nums)} ~ ${Math.max(...nums)} 사이에서 바뀌었어요.`);
+        return;
+      }
+      // 'pending'이면 기존과 동일하게 UI를 바꾸지 않는다(새 pending UI 없음).
     }
   } else if (mission.id === 'm5') {
     const fs = runPins.filter((x) => x.gp === 16 && x.duty > 0).map((x) => x.freq);
