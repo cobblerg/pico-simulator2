@@ -117,3 +117,38 @@ export type RosterEntryValidation =
   | {
       status: 'missing-name';
     };
+
+// ---------- normalization (Stage 0-D5-B) ----------
+//
+// 아래 두 함수는 "명확히 같은 입력의 표현 차이만 정리하고, 학생의 신원을
+// 추측하지 않는다"는 원칙만 적용하는 순수 함수다. 앞뒤 공백 제거와 Unicode
+// NFC 정규화(손실 없는 표준 정규화 — 같은 사람이 입력한 동일한 한글 텍스트가
+// 결합형/분해형 인코딩 차이로 다르게 비교되는 것을 막는다)만 수행한다.
+//
+// 다음은 절대 하지 않는다: 내부 공백 제거, 대소문자 변경, fuzzy/유사도 매칭,
+// 자모 기반 유사 매칭, 숫자 변환(Number/parseInt), leading zero 제거/학번
+// padding, 이름 자동 수정. 이런 "도움이 되려는" 보정은 서로 다른 학생을
+// 잘못 연결할 위험을 만든다.
+//
+// normalize != validate: 빈 문자열이 되어도 여기서는 오류를 내지 않는다.
+// 값이 비어 있는지 판단하는 것은 0-D5-C의 validation 책임이다.
+// 입력 객체는 mutate하지 않고 항상 새 객체를 반환한다.
+
+function normalizeText(value: string): string {
+  return value.trim().normalize('NFC');
+}
+
+export function normalizeStudentEntryInput(input: StudentEntryInput): StudentEntryInput {
+  return {
+    classCode: normalizeText(input.classCode),
+    studentNo: normalizeText(input.studentNo),
+    name: normalizeText(input.name),
+  };
+}
+
+export function normalizeRosterEntry(input: RosterEntryInput): RosterEntryInput {
+  return {
+    studentNo: normalizeText(input.studentNo),
+    name: normalizeText(input.name),
+  };
+}
