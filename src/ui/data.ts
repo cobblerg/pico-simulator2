@@ -1,4 +1,5 @@
 // 피코 핀 배치, 부품, 미션 정의 (새 미션은 MISSIONS 배열에 추가하면 된다)
+import { Checkpoint } from './checkpoint';
 
 export type PinDef = { phys: number; name: string; gp?: number; side: 'L' | 'R'; row: number };
 
@@ -56,6 +57,10 @@ export type Mission = {
   allowed?: PartKind[]; // 쓸 수 있는 부품 (없으면 제한 없음)
   preset?: Omit<Part, 'id'>[]; // 미리 배치된 회로
   lockPreset?: boolean; // 미리 배치 부품 고정
+  // 0-C1: checkAtEnd/checkLive의 판정 조건을 데이터로 표현한 것.
+  // 아직 어떤 실행 경로에서도 읽지 않는다 — checkAtEnd/checkLive는 계속
+  // 하드코딩된 자체 로직으로 판정한다.
+  checkpoints?: Checkpoint[];
 };
 
 export const MISSIONS: Mission[] = [
@@ -72,6 +77,7 @@ export const MISSIONS: Mission[] = [
       { label: '1초 기다리기', code: 'time.sleep(1)' },
     ],
     hint: 'on() → sleep(1) → off() 순서예요.',
+    checkpoints: [{ when: 'end', rule: { kind: 'edge-hold', pin: 25, minHoldMs: 800 } }],
   },
   {
     id: 'm2',
@@ -86,6 +92,7 @@ export const MISSIONS: Mission[] = [
       { label: '0.5초 쉬기', code: '    time.sleep(0.5)' },
     ],
     hint: 'for 안의 코드는 4칸 들여쓰기해야 반복돼요.',
+    checkpoints: [{ when: 'end', rule: { kind: 'edge-count', pin: 15, edge: 'rise', min: 3 } }],
   },
   {
     id: 'm3',
@@ -104,6 +111,7 @@ export const MISSIONS: Mission[] = [
       { label: '끄기', code: '        led.off()' },
     ],
     hint: 'PULL_UP이면 눌렀을 때 value()가 0이에요. 끝낼 때는 ■ 정지.',
+    checkpoints: [{ when: 'live', rule: { kind: 'press-toggle', inputGp: 14, outputGp: 15 } }],
   },
   {
     id: 'm4',
@@ -117,6 +125,9 @@ export const MISSIONS: Mission[] = [
       { label: '전압으로', code: '    print(pot.read_u16() * 3.3 / 65535)' },
     ],
     hint: '출력되는 동안 보드 옆 가변저항 손잡이를 끌어 보세요.',
+    checkpoints: [
+      { when: 'live', rule: { kind: 'stdout-range', minSamples: 2, bigValueThreshold: 10, bigSpanMin: 3000, smallSpanMin: 0.15 } },
+    ],
   },
   {
     id: 'm5',
@@ -130,6 +141,9 @@ export const MISSIONS: Mission[] = [
       { label: '0.3초', code: '    time.sleep(0.3)' },
     ],
     hint: '화면 위 스피커 버튼으로 소리를 켤 수 있어요.',
+    checkpoints: [
+      { when: 'both', rule: { kind: 'pwm-freq-set', pin: 16, targets: [262, 294, 330], tolerance: 0.03 } },
+    ],
   },
   {
     id: 'm6',
@@ -147,6 +161,9 @@ export const MISSIONS: Mission[] = [
       { label: '1초', code: 'time.sleep(1)' },
     ],
     hint: '실물 서보는 빨간 선을 VBUS(5V)에 연결해요.',
+    checkpoints: [
+      { when: 'both', rule: { kind: 'pwm-duty-angle-set', pin: 17, freqRange: [30, 70], targets: [0, 90, 180], tolerance: 10 } },
+    ],
   },
 ];
 
