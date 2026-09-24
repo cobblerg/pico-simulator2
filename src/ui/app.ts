@@ -5,7 +5,7 @@ import { BoardView } from './board';
 import { createEditor } from './editor';
 import { Mission, Part, PartKind, PART_INFO, PINS, pinByGp, nearestPin, LED_COLORS, LED_COLOR_NAMES, ERROR_HELP } from './data';
 import { getSimulatorMissions, getMissionById, getMissionIndex, getDefaultMission } from './content-access';
-import type { CheckpointEvaluationContext } from './checkpoint';
+import type { CheckpointEvaluationContext, CheckpointRuntimeState } from './checkpoint';
 import { evaluateCheckpoint } from './checkpoint-evaluator';
 import { selectCheckpoints } from './checkpoint-select';
 import {
@@ -47,7 +47,7 @@ let running = false;
 let runEdges: [number, number, number][] = [];
 let runStdout = '';
 let runPins: { gp: number; freq: number; duty: number }[] = [];
-let m3Seen = false;
+let checkpointState: CheckpointRuntimeState = {};
 
 // ---------- 화면 요소 ----------
 const consoleEl = $('#console');
@@ -643,11 +643,17 @@ function checkLive() {
   if (checkEl.classList.contains('pass') && !checkEl.hidden) return;
   if (missingParts().length) return;
   if (mission.id === 'm3') {
-    const btn = parts.find((p) => p.kind === 'button' && p.gp === 14);
-    const led = pins.get(15);
-    const ledOn = led?.mode === 'out' && led.level === 1;
-    if (btn?.pressed && ledOn) m3Seen = true;
-    if (m3Seen && !btn?.pressed && led?.mode === 'out' && led.level === 0) showCheck(true, '버튼을 누르면 켜지고, 떼면 꺼져요.');
+    // 성공 여부(press/on -> release/off 시퀀스)의 유일한 판정기는 evaluateCheckpoint의
+    // press-toggle rule이다 — 여기서 button.pressed/led.level 조합을 다시 판단하지 않는다.
+    const cps = selectCheckpoints(mission, 'live');
+    if (!cps.length) return; // checkpoint 없음 = fail-closed(아무 UI 변화 없음), 새 실패 메시지 없음
+    const ctx = buildCheckpointContext();
+    for (const cp of cps) {
+      const { result, nextState } = evaluateCheckpoint(cp.rule, ctx, checkpointState);
+      checkpointState = nextState;
+      if (result.status === 'passed') { showCheck(true, '버튼을 누르면 켜지고, 떼면 꺼져요.'); return; }
+      // 'pending'이면 기존과 동일하게 UI를 바꾸지 않는다(새 pending UI를 만들지 않음).
+    }
   } else if (mission.id === 'm4') {
     const nums = (runStdout.match(/-?\d+(\.\d+)?/g) || []).map(Number);
     if (nums.length >= 2) {
@@ -822,7 +828,7 @@ $('#run').addEventListener('click', () => {
   runEdges = [];
   runStdout = '';
   runPins = [];
-  m3Seen = false;
+  checkpointState = {};
   out(`\n▶ 가상 피코에서 실행\n`, 'sys');
   logEvent('run', { mission: mission.id, code, parts: parts.map((p) => `${p.kind}@GP${p.gp}`) });
   client.run(code);
