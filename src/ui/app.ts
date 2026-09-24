@@ -3,7 +3,8 @@ import type { EngineEvent, PinReport } from '../engine/core';
 import { RealPico } from '../real/serial';
 import { BoardView } from './board';
 import { createEditor } from './editor';
-import { MISSIONS, Mission, Part, PartKind, PART_INFO, PINS, pinByGp, nearestPin, LED_COLORS, LED_COLOR_NAMES, ERROR_HELP } from './data';
+import { Mission, Part, PartKind, PART_INFO, PINS, pinByGp, nearestPin, LED_COLORS, LED_COLOR_NAMES, ERROR_HELP } from './data';
+import { getSimulatorMissions, getMissionById, getMissionIndex, getDefaultMission } from './content-access';
 import {
   Activity, activityFor, defaultActivity, isCustomized, saveActivity, resetActivity,
   loadWorkspace, saveWorkspace, startWorkspace, newId,
@@ -34,7 +35,7 @@ function logEvent(type: string, data: any = {}) {
 (window as any).picosimPins = () => Object.fromEntries(pins);
 
 // ---------- 상태 ----------
-let mission: Mission = MISSIONS.find((m) => m.id === store.get('mission')) || MISSIONS[0];
+let mission: Mission = getMissionById(store.get('mission') ?? '') ?? getDefaultMission();
 let parts: Part[] = loadWorkspace(mission).parts;
 let projectName = store.get('projectName:' + mission.id) || '새 프로젝트';
 const passed = new Set<string>(JSON.parse(store.get('passed') || '[]'));
@@ -242,13 +243,13 @@ function addPaletteItem(k: PartKind) {
 
 // ---------- 미션 ----------
 function renderMissionList() {
-  $('#mission-list').innerHTML = MISSIONS.map(
+  $('#mission-list').innerHTML = getSimulatorMissions().map(
     (m, i) =>
       `<button type="button" class="m-item ${m.id === mission.id ? 'cur' : ''} ${passed.has(m.id) ? 'done' : ''}" data-m="${m.id}" aria-current="${m.id === mission.id}"><span class="m-no">${i + 1}</span><span class="m-name">${m.title}</span><span class="m-state" aria-label="${passed.has(m.id) ? '통과' : ''}"></span></button>`,
   ).join('');
   document.querySelectorAll<HTMLButtonElement>('.m-item').forEach((b) =>
     b.addEventListener('click', () => {
-      const m = MISSIONS.find((x) => x.id === b.dataset.m)!;
+      const m = getMissionById(b.dataset.m!)!;
       if (m.id === mission.id) return;
       openMission(m);
       logEvent('mission-open', { mission: m.id });
@@ -322,7 +323,7 @@ function renderProjectList() {
   $('#pd-list').innerHTML = list.length
     ? list
         .map((p, i) => {
-          const m = MISSIONS.find((x) => x.id === p.mission);
+          const m = getMissionById(p.mission);
           const when = new Date(p.savedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           return `<li><div class="pd-info"><b>${esc(p.name)}</b><small>${esc(m?.title || '')} · 부품 ${p.parts.length}개 · ${when}</small></div>
             <button class="btn ghost small" type="button" data-open="${i}">열기</button>
@@ -378,7 +379,7 @@ $('#pd-save').addEventListener('submit', (e) => {
 
 function applyProject(p: ProjectFile) {
   saveWsNow();
-  const m = MISSIONS.find((x) => x.id === p.mission) || mission;
+  const m = getMissionById(p.mission) || mission;
   const act = activityFor(m);
   // 교사가 고정한 부품은 활동 설정을 따르고, 나머지는 프로젝트대로
   const locked = act.lockPreset ? startWorkspace(m).parts : [];
@@ -470,7 +471,7 @@ function describeParts(list: { kind: PartKind; gp: number }[]) {
 function renderTeacher() {
   if (teacherEl.hidden) return;
   const act = activityFor(mission);
-  $('#t-mission').textContent = `${MISSIONS.indexOf(mission) + 1}. ${mission.title}`;
+  $('#t-mission').textContent = `${getMissionIndex(mission.id) + 1}. ${mission.title}`;
   $('#t-custom').textContent = isCustomized(mission) ? '바꾼 설정' : '';
   $('#t-allowed').innerHTML = (Object.keys(PART_INFO) as PartKind[])
     .map((k) => `<label><input type="checkbox" value="${k}" ${!act.allowed || act.allowed.includes(k) ? 'checked' : ''}> ${PART_INFO[k].name}</label>`)
@@ -529,7 +530,7 @@ if (__STANDALONE__) {
 
 function applyActivity(f: ActivityFile, via: 'link' | 'file') {
   saveWsNow();
-  const m = MISSIONS.find((x) => x.id === f.mission)!;
+  const m = getMissionById(f.mission)!;
   // 학생이 하던 작업은 지우지 않고 백업해 둔다
   const prev = loadWorkspace(m);
   if (prev.parts.length || prev.code !== activityFor(m).starter) {
