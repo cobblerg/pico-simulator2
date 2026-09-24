@@ -685,9 +685,17 @@ function checkLive() {
       // 'pending'이면 기존과 동일하게 UI를 바꾸지 않는다(새 pending UI 없음).
     }
   } else if (mission.id === 'm6') {
-    const angs = runPins.filter((x) => x.gp === 17 && x.freq > 30 && x.freq < 70).map((x) => ((x.duty / x.freq) * 1000 - 0.5) / 2 * 180);
-    const has = (a: number) => angs.some((x) => Math.abs(x - a) < 10);
-    if (has(0) && has(90) && has(180)) showCheck(true, '0도 → 90도 → 180도로 움직였어요.');
+    // 성공 여부(각도 3개 관측)의 유일한 판정기는 evaluateCheckpoint의
+    // pwm-duty-angle-set rule이다 — 여기서 freqRange/각도 환산/tolerance 비교를
+    // 다시 하지 않는다. 이 rule은 runtime state가 필요 없으므로 checkpointState를 쓰지 않는다.
+    const cps = selectCheckpoints(mission, 'live');
+    if (!cps.length) return; // checkpoint 없음 = fail-closed(아무 UI 변화 없음)
+    const ctx = buildCheckpointContext();
+    for (const cp of cps) {
+      const { result } = evaluateCheckpoint(cp.rule, ctx);
+      if (result.status === 'passed') { showCheck(true, '0도 → 90도 → 180도로 움직였어요.'); return; }
+      // 'pending'이면 기존과 동일하게 UI를 바꾸지 않는다(새 pending UI 없음).
+    }
   }
 }
 
