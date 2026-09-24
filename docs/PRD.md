@@ -172,7 +172,7 @@ flowchart TD
 
 **교사 화면**
 
-교사는 학번(studentNo)·이름(name)으로 학생을 식별한다(예: "10315 김민준", "10316 이서연"). 학생 목록에서 학생을 선택하면 DB-02(타임라인)로 이어지며, 내부 조회는 studentId를 키로 사용한다(12장 참고).
+교사는 담당 Class의 Enrollment를 통해 학생 목록(studentNo + Student.name, 예: "10315 김민준", "10316 이서연")을 확인한다. 학생을 선택하면 DB-02(타임라인)로 이어지며, 내부 조회는 `Enrollment → Student → Event/Project/Feedback` 관계를 이용한다(12장 참고).
 
 | ID | 화면 | 내용 | 우선순위 |
 | --- | --- | --- | --- |
@@ -271,17 +271,18 @@ flowchart LR
 
 | 테이블 | 주요 필드 |
 | --- | --- |
-| classes | classId, schoolYear, grade, classNumber, classCode, 담당 교사 |
-| students | studentId(PK), classId, studentNo(NOT NULL), name(NOT NULL) — UNIQUE(classId, studentNo) |
-| users | 역할(교사 등)과 인증 정보. 학생 식별(students)과는 별도 트랙 — 교사 인증 방식과 학생의 studentId가 Supabase Auth user id와 같아야 하는지는 미결정(12장) |
+| classes | classId(PK), schoolYear, grade, classNumber, classCode, 담당 교사 |
+| students | studentId(PK), name(NOT NULL) — 학급/학번이 바뀌어도 유지되는 학생 정체성(12장) |
+| enrollments | enrollmentId(PK), studentId(FK), classId(FK), studentNo(NOT NULL), enrolledAt — UNIQUE(classId, studentNo) — 특정 학년도·학급에서의 소속(12장) |
+| users | 역할(교사 등)과 인증 정보. 학생 식별(students/enrollments)과는 별도 트랙 — 교사 인증 방식과 학생의 studentId가 Supabase Auth user id와 같아야 하는지는 미결정(12장) |
 | courses / units / lessons | 과목·단원·차시, 정렬 순서 |
 | activities | 유형, 설정(JSON), 공개 학급·시점 |
-| events | studentId, classId, activityId, 이벤트 종류, 내용(JSON), 시각 — 추가 전용 |
-| projects | studentId, classId, activityId, 회로(JSON), 코드, 최근 저장 시각 |
+| events | studentId, enrollmentId, classId, activityId, 이벤트 종류, 내용(JSON), 시각 — 추가 전용 |
+| projects | studentId, enrollmentId, classId, activityId, 회로(JSON), 코드, 최근 저장 시각 |
 | coach\_messages | studentId, 질문, 응답, 힌트 단계, 차단 여부 |
-| feedback | 교사(teacherId), studentId, activityId 또는 projectId, 코드 줄, 코멘트, 읽음 여부 |
+| feedback | 교사(teacherId), studentId, enrollmentId, activityId 또는 projectId, 코드 줄, 코멘트, 읽음 여부 |
 
-이벤트를 하나의 추가 전용 테이블에 JSON으로 쌓으면, 새 활동 유형이 생겨도 스키마 변경 없이 기록을 늘릴 수 있다. event payload 안에 name/studentNo를 반복 저장하지 않고, `Event → studentId → Student` 관계로 학생 정보를 조회한다(12.8). 위 테이블은 여전히 PRD 수준의 논리 모델이며 실제 DB 스키마(SQL)는 아직 만들지 않았다.
+이벤트를 하나의 추가 전용 테이블에 JSON으로 쌓으면, 새 활동 유형이 생겨도 스키마 변경 없이 기록을 늘릴 수 있다. event payload 안에 name/studentNo를 반복 저장하지 않고, `Event → studentId → Student` 및 `Event → enrollmentId → Enrollment` 관계로 학생·소속 정보를 조회한다(12장). `classId`를 events/projects에도 함께 두는 것은 조회 편의를 위한 의도된 스냅샷 반정규화다. 위 테이블은 여전히 PRD 수준의 논리 모델이며 실제 DB 스키마(SQL)는 아직 만들지 않았다.
 
 ## 11. 로드맵, 리스크, 열린 질문
 
@@ -289,13 +290,13 @@ MVP는 "피코 실습 + 과정 기록 + 학생 타임라인"까지이며, AI 코
 
 | 단계 | 기간(가정) | 범위 |
 | --- | --- | --- |
-| 0. 기반 | 2주 | 콘텐츠 모델, 체크포인트 판정 구조, Student/Class Identity 기반(12장), 학급·활동 관리 |
+| 0. 기반 | 2주 | 콘텐츠 모델, 체크포인트 판정 구조, Student/Enrollment/Class Identity 기반(12장), 학급·활동 관리 |
 | 1. MVP 실습·기록 | 4\~6주 | PicoSim에 가상 칩 엔진 통합(PoC 포함), 시뮬레이터 P0, 실물 연계 BR-01·02, 이벤트 기록, 학생 타임라인, 피드백 작성 |
 | 2. 코칭·대시보드 | 4주 | 힌트 사다리, 응답 필터, 학급 실시간 뷰 |
 | 3. 파일럿 | 2\~4주 | 1개 학급 적용, 지표 측정, 학생 설문 |
 | 4. 확장 | 이후 | 디지털사회 활동, 체크포인트 점검, 추가 부품, 협력 교사 |
 
-Stage 1의 이벤트 기록·학생 타임라인·Supabase 연동은 Stage 0의 Student/Class Identity 기반(12장) 위에서 진행한다 — 학생 식별자(studentId) 없이는 이벤트를 "누구의 것"으로 저장할 수 없기 때문이다.
+Stage 1의 이벤트 기록·학생 타임라인·Supabase 연동은 Stage 0의 Student/Enrollment/Class Identity 기반(12장) 위에서 진행한다 — 학생 식별자(studentId)와 소속 관계(enrollmentId) 없이는 이벤트를 "누구의, 어느 소속 시점 것"으로 저장할 수 없기 때문이다.
 
 **리스크와 대응**
 
@@ -311,46 +312,72 @@ Stage 1의 이벤트 기록·학생 타임라인·Supabase 연동은 Stage 0의 
 
 **열린 질문**
 
-- [ ] 교사 인증 방식 (예: 학교 구글 계정 vs 별도 발급 코드) — 학생 인증(학급 코드+학번+이름, 12.5)과는 별개로 결정 필요
-- [ ] 학생 명단을 교사가 사전 등록할지, 학생이 최초 입장 시 자동 등록될지
-- [ ] 같은 classId+studentNo인데 제출한 이름이 기존 이름과 다를 때 처리 정책 (입장 거부 / 이름 확인 재요청 / 교사 승인 / 교사 사전 등록 명단 대조 등, 12.4)
+**결정됨(기본 방향, 세부 사항은 여전히 미결정)**
+- 학생 명단 등록: 기본 방향은 **교사 사전 등록**(Student+Enrollment 함께 생성). 명단에 없는 전학생/임시 학생 등은 자동 등록하지 않고 **교사 확인 후 추가하는 예외 흐름**으로 처리한다(12.8~12.9). 다만 사전 등록의 구체적 방법(수동 입력/CSV 등)과 예외 승인 UI는 미결정.
+- 같은 `classId+studentNo`인데 입력한 이름이 `Student.name`과 다른 경우: 자동으로 이름을 바꾸거나 새 `Student`를 만들지 않고 **교사 확인이 필요한 예외 상황**으로 분류한다(12.9). 다만 거절/재입력/교사 승인 중 구체적으로 어떤 UI로 처리할지는 미결정.
+
+**여전히 열린 질문**
+- [ ] 교사 인증 방식 (예: 학교 구글 계정 vs 별도 발급 코드) — 학생 인증(학급 코드+학번+이름, 12.12)과는 별개로 결정 필요
+- [ ] 학생 명단 사전 등록의 구체적 방법 (수동 입력 / CSV·Excel import 등)
+- [ ] 명단에 없는 예외 학생에 대한 교사 승인 UI/흐름
 - [ ] classCode 생성·만료·재발급 정책
-- [ ] 학생 개인정보(studentNo/name) 보관 기간 및 학년도 종료 후 삭제 절차의 구체적 규정 (12.7-E)
+- [ ] 학생 개인정보(studentNo/name) 보관 기간 및 학년도 종료 후 삭제 절차의 구체적 규정
 - [ ] 학생이 자신의 과거 활동에 다시 접근하는 방식 (재입장 시 이전 세션 복원 등)
+- [ ] 이전 학년도 Student와 새 학년도 Enrollment가 동일인임을 확인하는 절차 (학번/이름 자동 매칭은 사용하지 않음, 12.11)
+- [ ] 여러 학교를 지원할 경우 school 개념 추가가 필요한지 (다중 학교 구조)
 - [ ] 실물 수업 보드 모델(Pico / Pico W / Pico 2)과 MicroPython 버전 — 에뮬레이터 대상 확정에 필요
 - [ ] 대시보드 기록을 수행평가 근거로 쓸지, 형성평가용으로만 쓸지
 - [ ] 적용 학년·학급 수와 동시 접속 규모
 - [ ] AI 제공사와 월 예산
-- [ ] 다른 교사/다른 학교에 공유할 계획 여부, 그리고 여러 학교를 지원할 경우 school 개념 추가가 필요한지 (다중 학교 구조)
 
 ## 12. 학생·학급 식별 정책 (Stage 0-D)
 
-Stage 0-C(체크포인트 판정 구조화)를 마친 뒤, Supabase 기반 이벤트 영속화·교사 대시보드를 만들기 전에 먼저 확정해야 하는 학생·학급 식별 정책이다.
+Stage 0-C(체크포인트 판정 구조화)를 마친 뒤, Supabase 기반 이벤트 영속화·교사 대시보드를 만들기 전에 먼저 확정해야 하는 학생·학급 식별 정책이다. **Stage 0-D2 설계 검토를 거쳐 Student/Enrollment 분리 모델(Model B)을 채택했다.**
 
-**이 장은 요구사항/설계 확정이며 구현이 아니다.** 현재 `src/ui/`에는 Student/Class 모델, 학생 입장 UI, Supabase 연결, 이벤트 영속화가 전혀 존재하지 않는다. `logEvent`는 지금도 브라우저 메모리와 `picosim:event` CustomEvent로만 남고 어디에도 저장되지 않는다.
+**이 장은 요구사항/설계 확정이며 구현이 아니다.** 현재 `src/ui/`에는 Student/Enrollment/Class 모델, 학생 입장 UI, 교사 명단 등록, Supabase 연결, 이벤트 영속화가 전혀 존재하지 않는다. `logEvent`는 지금도 브라우저 메모리와 `picosim:event` CustomEvent로만 남고 어디에도 저장되지 않는다.
 
-### 12.1 학생 필수 정보와 내부 식별자
+### 12.1 Student와 Enrollment의 기본 관계
 
-학생은 수업 참여를 위해 다음 두 값을 **반드시** 제출한다.
+핵심 원칙:
 
-| 필드 | 필수 | 설명 |
+- **Student** = 학급이나 학번이 바뀌어도 유지될 수 있는, 시스템 내부의 학생 정체성("이 사람").
+- **Enrollment** = 특정 학생이 특정 학년도·학급에 소속되어 있다는 사실("그 해 그 반의 소속").
+
+```
+Student
+   │
+   └── 1:N Enrollment
+               │
+               └── N:1 Class
+```
+
+`studentNo`는 `Student`가 아니라 `Enrollment`의 속성이다 — 학번은 "사람"이 아니라 "특정 학급에서의 소속"에 속하는 값이기 때문이다.
+
+### 12.2 Student 모델
+
+| 필드 | 의미 | 제약 |
 | --- | --- | --- |
-| studentNo | 예 | 학교에서 쓰는 학번. 업무상 학생을 구별하는 핵심 값 |
-| name | 예 | 학생 이름 |
+| studentId | 내부 시스템 고유 ID(UUID 등) | PK |
+| name | 학생 이름 | NOT NULL, unique 아님 |
 
-`studentNo`는 **DB의 primary key로 쓰지 않는다.** 시스템 내부에는 별도의 `studentId`(UUID 등 내부 고유 식별자)를 두고, 모든 내부 관계(Event/Project/Feedback 등)는 `studentId`로 연결한다. `studentNo`/`name`은 교사가 학생을 알아보기 위한 **업무 식별값**일 뿐, 시스템 관계의 키가 아니다.
+`Student`에는 `classId`/`studentNo`를 두지 않는다 — 이 둘은 Enrollment로 이동했다(12.3). `name`은 필수이지만 동명이인을 허용하며(예: 10315 김민준, 10321 김민준), identity key로 쓰지 않는다. 시스템 내부 관계(Event/Project/Feedback 등)는 모두 `studentId`로 연결한다.
 
-### 12.2 Uniqueness 정책
+### 12.3 Enrollment 모델
 
-- `studentNo`는 **시스템 전체 global unique가 아니다.**
-- **`(classId, studentNo)` 조합만 unique**해야 한다 — 같은 학급 안에서 같은 학번을 가진 학생이 둘 이상 존재할 수 없다. 다른 학급·다른 학년도에서는 동일한 `studentNo`를 다시 쓸 수 있다(12.6).
-- `name`은 **unique key가 아니다.** 같은 학급 안에서도 동명이인이 있을 수 있다(예: 10315 김민준, 10321 김민준). 학생을 이름만으로 구별해서는 안 되며, 업무상 식별은 `classId + studentNo`, 시스템 내부 관계는 `studentId`를 쓴다.
+| 필드 | 의미 | 제약 |
+| --- | --- | --- |
+| enrollmentId | 특정 소속 관계의 내부 PK | PK |
+| studentId | 어떤 학생인가 | FK → Student |
+| classId | 어느 학급인가 | FK → Class |
+| studentNo | 그 학급에서 쓰는 학번 | NOT NULL |
+| enrolledAt | 소속이 시작된 시점 | — |
+| (classId, studentNo) | — | UNIQUE |
 
-### 12.3 Class / Student 논리 데이터 모델
+향후 고려(이번 단계에서 확정하지 않음): `status`(예: active/transferred/temporary/inactive), `leftAt`(소속 종료 시점) — enum 값과 상태 전이 규칙은 미결정으로 남긴다.
 
-실제 DB 스키마(SQL)는 이번 단계에서 만들지 않는다. 아래는 PRD 수준의 논리 모델이다.
+`studentNo`는 **"학생이라는 사람의 영구 식별자"가 아니라 "특정 학년도·학급에서 학생을 구별하기 위한 업무상 식별값"**이다. 따라서 2026년 1학년 3반의 10315와 2027년 2학년 2반의 20207이 같은 학생일 수 있다 — `studentId`는 그대로 유지하고 `Enrollment`만 새로 만든다.
 
-**Class**
+### 12.4 Class 모델과 schoolYear 불변식
 
 | 필드 | 의미 |
 | --- | --- |
@@ -360,73 +387,108 @@ Stage 0-C(체크포인트 판정 구조화)를 마친 뒤, Supabase 기반 이�
 | classNumber | 반 |
 | classCode | 학생이 이 학급/수업에 입장할 때 쓰는 코드 |
 
-**Student**
+`Class`는 **학년도별로 새로 생성되는 논리적 학급**이다. 2026년 1학년 3반과 2027년 1학년 3반은 서로 다른 `Class`이며 `classId`도 다르다. `schoolYear`는 `Class`의 필수 맥락이며, `Enrollment`의 `(classId, studentNo)` uniqueness가 실질적으로 학년도까지 포함하게 되는 것은 이 불변식(매 학년도 새 `Class` 생성) 덕분이다 — 이 전제가 지켜지지 않으면(예: `Class`를 연도 간 재사용) uniqueness 안전성이 깨질 수 있다.
 
-| 필드 | 의미 | 제약 |
-| --- | --- | --- |
-| studentId | 내부 시스템 고유 ID | PK |
-| classId | 소속 학급 | FK |
-| studentNo | 학교 학번 | NOT NULL |
-| name | 학생 이름 | NOT NULL |
-| (classId, studentNo) | — | UNIQUE |
+### 12.5 Uniqueness 정책
 
-### 12.4 학생 입장 기본 흐름 (MVP)
+- `studentNo`는 **시스템 전체 global unique가 아니다.**
+- **`UNIQUE(classId, studentNo)`는 `Enrollment`에 적용된다**(Student가 아님) — 같은 학급 안에서 같은 학번을 가진 학생이 둘 이상 존재할 수 없다. 다른 학급·다른 학년도에서는 동일한 `studentNo`를 다시 쓸 수 있다(12.4).
+- `name`은 **unique key가 아니다.** 학생을 이름만으로 구별해서는 안 되며, 업무상 식별은 `classId + studentNo`(Enrollment), 시스템 내부 관계는 `studentId`(Student)를 쓴다.
+
+### 12.6 교사 명단 사전등록 정책
+
+학생 등록의 기본 운영 방향은 **교사의 사전 명단 등록**이다. 교사가 학생 명단(예: 10301 김민준, 10302 이서연)을 등록하면 시스템은 각 학생에 대해 `Student` + `Enrollment`를 함께 생성한다. `Enrollment`를 `studentId` 없이 "빈 자리"처럼 미리 만들어 두는 구조는 MVP 기본안으로 채택하지 않는다 — 정상적인 명단 등록에서 `Enrollment.studentId`는 필수 관계다.
+
+목표는 **학생 기록의 신뢰성을 높이는 것**이다. 사전 등록 방법(수동 입력/CSV·Excel import 등)의 구체 사양은 이번 단계에서 결정하지 않는다(11장 열린 질문).
+
+### 12.7 예외 학생 정책 (명단에 없는 학생)
+
+명단에 없는 학생(전학생, 임시 학생 등)이 입장하려는 경우, **자동으로 신뢰된 학생 기록을 생성하는 것을 기본 정책으로 하지 않는다.** 대신 "교사 확인/승인을 거쳐 Student + Enrollment를 추가할 수 있는 예외 흐름"을 제품 방향으로 둔다. 구체적인 승인 UI/방식은 이번 단계에서 결정하지 않고 향후 학생 등록 단계에서 설계한다(11장 열린 질문).
+
+### 12.8 학생 입장 기본 흐름 (MVP)
 
 ```
-학급 코드(classCode)
+학생 입력: classCode + studentNo + name
       ↓
-Class 확인
+Class 확인 (classCode → classId)
       ↓
-학번(studentNo) + 이름(name) 입력
+Enrollment 조회 ((classId, studentNo) 기준)
       ↓
-Student 확인 또는 신규 등록
-      ↓
-studentId 확보
-      ↓
+   ┌──────────────┴──────────────┐
+Enrollment 있음               Enrollment 없음
+   │                              │
+Enrollment → Student 확인      명단에 없는 학생
+   │                          → 예외 상황(12.7),
+입력 name과                     자동 등록 아님
+Student.name 비교
+   │
+ ┌─┴─┐
+일치   불일치
+ │      │
+studentId +   학번은 있으나 이름이 다름
+enrollmentId  → 예외 상황(12.9),
+확보           자동 수정/생성 아님
+ │
 학습 활동 시작
 ```
 
-시스템은 제출된 `classCode`로 Class를 찾고, 그 `classId` 안에서 `studentNo`로 기존 Student를 찾는다. 같은 `classId + studentNo`가 이미 있으면 기존 `studentId`에 연결하고, 없으면 새 Student를 등록할 수 있는 구조로 설계한다.
+학생 최초 입장이 기본적으로 `Student`를 자동 생성하는 구조가 **아니다** — 교사가 사전 등록한 명단을 확인하는 흐름이 기본이다.
 
-**단, 기존 `studentNo`는 있는데 제출한 `name`이 기존 `name`과 다른 경우**(오타, 동명이인 착오, 도용 시도 등)를 어떻게 처리할지는 이번 단계에서 임의로 결정하지 않는다 — 열린 질문(11장)에 남긴다. 입장 거부 / 이름 확인 재요청 / 교사 승인 / 교사 사전 등록 명단과만 대조 등 여러 선택지가 가능하다.
+### 12.9 이름 불일치 처리
 
-### 12.5 학생 인증과 교사 인증은 별개 문제
+`(classId, studentNo)`에 해당하는 `Enrollment`가 존재하지만 입력한 `name`이 그 `Enrollment`의 `Student.name`과 다른 경우, 자동으로 이름을 바꾸거나 새 `Student`를 만들지 않는다. **학생 기록 신뢰성을 위해 "교사 확인이 필요한 상황"으로 분류한다.** 거절 / 재입력 요청 / 교사 승인 중 구체적으로 어떤 방식을 쓸지는 이번 단계에서 결정하지 않는다(11장 열린 질문).
 
-기존 "로그인 방식: 학교 구글 계정 vs 교사 발급 코드"라는 열린 질문은 학생 인증과 교사 인증을 하나의 질문으로 묶고 있었다. 이번 단계에서 다음과 같이 분리한다.
+### 12.10 전학생 처리
+
+학생이 학급을 이동할 때 `Student`는 유지한다. 기존 `Enrollment`는 과거 소속으로 보존하고, 새 `Class`에 대한 새 `Enrollment`를 생성한다.
+
+예: Student A(김민준) — Enrollment 1(2026 1학년 3반 / 10315), Enrollment 2(2026 1학년 4반 / 새 학번 또는 동일 학번). 과거 학습 기록은 기존 Enrollment와 연결된 상태로 유지된다.
+
+### 12.11 다음 학년도 처리
+
+같은 학생이 다음 학년으로 진급하면 `Student`는 유지할 수 있고, 새 학년도 `Class`에 새 `Enrollment`를 생성한다.
+
+예: Student A — 2026: Enrollment A1(1학년 3반/10315), 2027: Enrollment A2(2학년 2반/20207).
+
+**단, 이전 학년도 학생과 새 학년도 학생이 동일인인지 판단하는 방식은 학번/이름 자동 매칭으로 결정하지 않는다.** 이 연결 과정은 향후 교사/관리자 확인 정책으로 별도 설계한다(11장 열린 질문).
+
+### 12.12 학생 인증과 교사 인증은 별개 문제
+
+기존 "로그인 방식: 학교 구글 계정 vs 교사 발급 코드"라는 질문은 학생 인증과 교사 인증을 하나로 묶고 있었다. 다음과 같이 분리한다.
 
 - **학생 MVP 인증(확정)**: `classCode + studentNo + name`. Google 로그인은 **필수 조건이 아니다.** 다만 향후 Google Workspace for Education, 학교 Google 계정 등 다른 인증 방식을 얹을 수 있도록 구조는 열어 둔다.
 - **교사 인증 방식**: 학생 인증과 별개로 결정한다(11장 열린 질문).
 
-### 12.6 학년도(schoolYear)를 두는 이유
+### 12.13 개인정보 원칙
 
-`studentNo`는 학급·학년도가 바뀌면 재사용될 수 있다 — 예를 들어 2026년 1학년 3반의 10315와 2027년 1학년 3반의 10315는 서로 다른 학생/학급 관계일 수 있다. 따라서 `studentNo`는 연도를 관통하는 전역 식별자가 아니며, Class에 `schoolYear`를 두어 `(schoolYear, classId, studentNo)`가 실질적인 업무 식별 단위가 되도록 한다.
+Student/Enrollment 분리로 다음 원칙이 더 명확해졌다.
 
-### 12.7 개인정보 원칙 (기존 "가명 ID" 원칙과의 정합)
-
-기존 9장의 "이름·이메일 대신 학번 기반 가명 ID로 로그인"이라는 표현은 실제로 `studentNo`/`name`을 저장한다는 이번 요구사항과 맞지 않아 아래처럼 정리한다.
-
-- **A.** 서비스 운영(교사의 학습관리 목적)을 위해 필요한 최소 학생정보 — `studentNo`, `name`, `classId` — 는 저장할 수 있다.
-- **B.** 내부 이벤트/프로젝트/피드백 등 시스템 관계에는 가능한 한 `studentId`를 사용한다(12.8).
+- **A.** 서비스 운영(교사의 학습관리 목적)을 위해 필요한 최소 학생정보 — `Student.name`, `Enrollment.studentNo`, `Enrollment.classId` — 는 저장할 수 있다.
+- **B.** 내부 이벤트/프로젝트/피드백 등 시스템 관계에는 가능한 한 `studentId`(및 `enrollmentId`)를 사용한다(12.14).
 - **C.** AI 서비스에는 `name`/`studentNo`를 직접 전달하지 않는다. AI에는 가명화된 `studentId`와 필요한 학습 맥락만 전달하는 것을 기본 원칙으로 한다.
 - **D.** `studentNo`/`name`은 교사의 학습관리 목적 안에서만 사용한다.
-- **E.** 보관 기간 및 학년도 종료 후 삭제 정책은 별도 정의가 필요하다(11장 열린 질문). 개인정보보호법·만 14세 미만 보호자 동의·학교의 개인정보 처리 근거 등은 실제 학교/교육청 정책과 법적 검토가 필요한 영역이며, 이 PRD에서 법률적 판단을 확정하지 않는다.
-- **F.** 학생 개인정보(`studentNo`, `name`)가 포함되므로 접근 권한 통제와 RLS가 중요하다.
+- **E.** 보관 기간 및 학년도 종료 후 삭제 정책은 별도 정의가 필요하다(11장 열린 질문). `Enrollment`가 시간·맥락 스코프를 갖는 덕분에, 학년도 종료 후에는 특정 연도의 `Enrollment`만 선택적으로 삭제/보관 처리하는 것도 향후 가능하다. 개인정보보호법·만 14세 미만 보호자 동의·학교의 개인정보 처리 근거 등은 실제 학교/교육청 정책과 법적 검토가 필요한 영역이며, 이 PRD에서 법률적 판단을 확정하지 않는다.
+- **F.** 학생 개인정보(`name`, `studentNo`)가 포함되므로 접근 권한 통제와 RLS가 중요하다.
 
-즉 **플랫폼 내부(교사 화면)에서는 교사가 학번/이름을 볼 수 있지만, AI provider에는 `studentId` 기반 가명 식별만 전달한다** — "학생이 가명 ID로 로그인한다"가 아니라 "**AI에게는 가명 ID만 넘긴다**"로 원칙을 재정의한다. 6장의 "코치는 학생 이름·학번 없이 가명 ID(studentId)만 받는다"는 이 정의 그대로 유지된다.
+`name`은 `Student`에 한 번만 저장하고 `Enrollment`에 중복 저장하지 않는다. `event payload`에도 `name`/`studentNo`를 복제하지 않는다.
 
-### 12.8 Event / Project / Feedback와 Student의 관계
+즉 **플랫폼 내부(교사 화면)에서는 교사가 학번/이름을 볼 수 있지만, AI provider에는 `studentId` 기반 가명 식별만 전달한다.** 6장의 "코치는 학생 이름·학번 없이 가명 ID(studentId)만 받는다"는 이 정의 그대로 유지된다.
 
-향후 모든 학생 학습 이벤트(코드 작성, 코드 실행, 회로 변경, checkpoint, AI coaching 질문/응답, 응답 제출 등)는 다음 관계를 갖는다.
+### 12.14 Event / Project / Feedback 관계
 
 ```
-Event   { eventId, studentId, classId, activityId, eventType, payload, createdAt }
-Project { studentId, classId, activityId, ... }
-Feedback{ teacherId, studentId, activityId 또는 projectId, ... }
+Event    { eventId, studentId, enrollmentId, classId, activityId, eventType, payload, createdAt }
+Project  { studentId, enrollmentId, classId, activityId, ... }
+Feedback { teacherId, studentId, enrollmentId, activityId 또는 projectId, ... }
 ```
 
-**event payload 안에 `name`/`studentNo`를 반복 저장하지 않는다.** 학생 정보가 필요하면 `Event → studentId → Student` 관계로 조회한다. 10장의 데이터 모델 표도 이 원칙에 맞춰 갱신했다.
+- `studentId` → 누구의 기록인가
+- `enrollmentId` → 당시 어느 소속 관계였는가(정밀 참조)
+- `classId` → 어느 학급의 기록인가(조회 편의를 위한 의도된 스냅샷 반정규화)
 
-### 12.9 AI Coaching에 전달 가능/불가 정보
+Event/Project는 **생성 시점의 소속 맥락을 스냅샷으로 고정**하며, 학생이 전학하거나 진급해도 기존 기록의 `classId`/`enrollmentId`를 현재 소속 기준으로 다시 계산하지 않는다(append-only 원칙 유지). Feedback도 마찬가지로 교사가 남긴 시점의 소속 맥락이 이후 학생의 전학/진급과 무관하게 유지된다. **event payload 안에 `name`/`studentNo`를 반복 저장하지 않는다** — 필요하면 `studentId → Student`, `enrollmentId → Enrollment` 관계로 조회한다. 10장의 데이터 모델 표도 이 원칙에 맞춰 갱신했다.
+
+### 12.15 AI Coaching에 전달 가능/불가 정보
 
 | 전달 가능 | 전달하지 않음 |
 | --- | --- |
@@ -437,15 +499,23 @@ Feedback{ teacherId, studentId, activityId 또는 projectId, ... }
 | 학생 질문 | |
 | 필요한 학습 history | |
 
-AI 응답 및 코칭 기록은 `studentId`와 연결해 저장할 수 있다.
+`enrollmentId`/`classId`도 AI 코칭에 실제로 필요하지 않다면 기본적으로 전달하지 않는다. AI 응답 및 코칭 기록은 `studentId`와 연결해 저장할 수 있다.
 
-### 12.10 Teacher Dashboard에서의 학생 식별
+### 12.16 Teacher Dashboard에서의 학생 식별
 
-교사 화면(7장 DB-01~06)에서는 교사가 학생을 실제로 알아볼 수 있어야 하므로, `studentNo` + `name`으로 학생 목록을 표시한다(예: "10315 김민준", "10316 이서연"). 학생을 선택하면 timeline(코드/회로 변경, checkpoint, 제출물, AI coaching, 교사 피드백)으로 이어지며, 내부적으로는 그 학생의 `studentId`를 키로 조회한다.
+교사 화면(7장 DB-01~06)에서는 **해당 Class의 Enrollment를 기준으로** 학생 목록을 조회한다. 화면에는 `studentNo + Student.name`을 표시한다(예: "10315 김민준", "10316 이서연"). 학생을 선택하면 `Enrollment → Student → Event/Project/Feedback` 관계를 이용해 학습 타임라인을 조회한다.
 
-### 12.11 users / Auth와 학생 식별의 관계 (결정 보류)
+### 12.17 users / Auth와 학생 식별의 관계 (결정 보류)
 
 기존 10장의 `users` 테이블은 교사/학생 역할을 함께 표현하고 있었다. 이번 단계에서 완전한 Auth 스키마를 확정하지 않는다.
 
 - 교사 인증(User/Auth)과 학생 식별(Student)은 개념적으로 분리할 수 있다.
 - 학생의 `studentId`가 반드시 Supabase Auth의 user id여야 하는지는 **지금 결정하지 않는다** — 이는 향후 Supabase 설계 단계에서 결정한다.
+
+### 12.18 LearningSession을 지금 도입하지 않는 이유
+
+`LearningSession`/`StudentSession` 같은 별도 엔티티는 현재 확정된 요구사항만으로는 필요성이 충분하지 않아 도입하지 않는다. 새로고침/재접속/재시도 구분은 `Event.createdAt`의 시간 간격으로 사후에 추론할 수 있다. 향후 명시적 세션 단위 분석, 세션별 통계, 세션 복원 같은 구체적 요구가 생기면 재검토한다.
+
+### 12.19 classCode 정책
+
+`classCode`는 `Class`의 **변경 가능한 학생 입장용 속성**으로 취급한다. `Class`의 불변 정체성은 `classId`이며, `classCode`는 그와 별개로 재발급될 수 있다. 재발급 이력을 추적하기 위한 별도 엔티티는 지금 만들지 않는다. 생성/만료/재발급의 구체 정책은 여전히 향후 결정 사항으로 남긴다(11장 열린 질문).
