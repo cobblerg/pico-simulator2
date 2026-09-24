@@ -5,10 +5,10 @@
 
 ## 바로 쓰기
 
-`dist/index.html` 한 파일에 전부(펌웨어, 가상 칩, 화면)가 들어 있습니다.
+배포된 페이지: https://pico-simulator2.vercel.app
 
-- **GitHub Pages**: 기존 `pico-simulator1` 저장소에 `dist/index.html`을 올리면 됩니다 (예: `v2/index.html`로 올리면 `…github.io/pico-simulator1/v2/`).
-- **Netlify**: `dist` 폴더를 끌어다 놓기.
+`dist/index.html` 한 파일에 전부(펌웨어, 가상 칩, 화면)가 들어 있습니다. 이 파일은 Vercel이 소스로부터 자동으로 빌드해 배포하며, Git 저장소에는 커밋하지 않습니다(아래 "개발·배포" 참고).
+
 - 실물 연결(Web Serial)은 **https 주소 + 크롬·엣지·웨일**에서만 동작합니다. 파일을 더블클릭해 연 화면에서는 연결 버튼이 동작하지 않을 수 있습니다.
 
 ## 실물 수업으로 넘어가는 흐름
@@ -72,12 +72,23 @@ build.mjs              모든 것을 index.html 한 파일로 묶기
 micropython-v1.29.0-RPI_PICO.uf2   공식 소스(v1.29.0 태그)로 빌드한 펌웨어
 ```
 
-## 다시 빌드하기
+## 개발 · 배포
+
+**개발 (로컬 확인)**
 
 ```bash
 npm install
-node build.mjs        # dist/index.html (설치용), dist/picosim-artifact.html (미리보기용)
+npm run build          # node build.mjs → dist/index.html (설치용), dist/picosim-artifact.html (미리보기용)
+npm start               # server.mjs로 dist/를 http://localhost:3000 에서 확인
 ```
+
+**배포 (Production)**
+
+1. 소스를 `main`에 commit/push
+2. GitHub → Vercel이 변경을 감지해 `npm run build`를 자동 실행
+3. 생성된 `dist/`를 Vercel이 그대로 Production에 자동 배포
+
+`dist/`는 빌드할 때마다 새로 만들어지는 산출물이라 Git에는 커밋하지 않습니다(`.gitignore`). 로컬에서 `npm run build`를 실행하면 같은 폴더가 다시 생기며, 이는 확인용일 뿐 배포에는 쓰이지 않습니다.
 
 ## 미션 추가하기
 
