@@ -152,7 +152,7 @@ export class BoardView {
     const dx = pin.row % 2 ? PART_FAR : PART_NEAR; // 이웃 핀 부품이 겹치지 않게 두 줄로
     const cx = left ? BX - dx : BX + BW + dx;
     const info = PART_INFO[part.kind];
-    const g = el('g', { class: `part part-${part.kind}`, 'data-id': part.id, tabindex: 0, role: 'button', 'aria-label': `${info.name} GP${part.gp}` }, this.partsLayer);
+    const g = el('g', { class: `part part-${part.kind}${part.locked ? ' locked' : ''}`, 'data-id': part.id, tabindex: 0, role: 'button', 'aria-label': `${info.name} GP${part.gp}${part.locked ? ' (고정됨)' : ''}` }, this.partsLayer);
     // 전선
     const edge = left ? cx + 26 : cx - 26;
     el('path', { d: `M${px} ${y} L${left ? BX - 2 : BX + BW + 2} ${y} L${edge} ${y}`, class: 'wire', stroke: info.wire }, g);
@@ -236,8 +236,18 @@ export class BoardView {
     g.addEventListener('pointerdown', (e) => {
       const pe = e as PointerEvent;
       if (pe.button !== 0) return;
+      if (part.locked) {
+        this.select(part.id); // 선생님이 고정한 부품은 옮길 수 없다
+        return;
+      }
       this.startDrag(pe, part.kind, part.id);
     });
+    if (part.locked) {
+      // 자물쇠 표시
+      const lk = el('g', { class: 'lock', transform: `translate(${cx + (left ? -30 : 30)} ${y - 14})` }, this.labelsLayer);
+      el('path', { d: 'M-3 0 V-3 A3 3 0 0 1 3 -3 V0', class: 'lock-shackle' }, lk);
+      el('rect', { x: -4.5, y: 0, width: 9, height: 7, rx: 1.5, class: 'lock-body' }, lk);
+    }
     g.addEventListener('keydown', (e) => {
       if ((e as KeyboardEvent).key === 'Enter') this.select(part.id);
     });

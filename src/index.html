@@ -19,6 +19,7 @@
       <button class="tab" role="tab" data-tab="bridge" aria-selected="false" type="button">실물로 옮기기</button>
     </nav>
     <div class="top-right">
+      <button id="teacher-toggle" class="btn ghost small" type="button" aria-pressed="false" aria-controls="teacher">교사 설정</button>
       <button id="sound" class="btn ghost small" type="button" aria-pressed="false"><i class="ico-sound" aria-hidden="true"></i><span>소리 끔</span></button>
       <span id="engine-status" class="status boot" role="status"><i aria-hidden="true"></i><span>켜는 중</span></span>
     </div>
@@ -28,6 +29,39 @@
     <!-- 가상 실습 -->
     <section id="view-sim" class="view-sim">
       <aside class="side">
+        <div id="teacher" class="card teacher" hidden>
+          <div class="teacher-head">
+            <h2 class="eyebrow">교사 설정 <small id="t-mission"></small></h2>
+            <span id="t-custom" class="chip"></span>
+          </div>
+          <fieldset class="t-group">
+            <legend>쓸 수 있는 부품</legend>
+            <div id="t-allowed" class="t-checks"></div>
+            <p class="note">하나도 고르지 않으면 부품 없이 내장 LED만 써요. 모두 고르면 제한이 없어요.</p>
+          </fieldset>
+          <fieldset class="t-group">
+            <legend>미리 배치된 회로</legend>
+            <p id="t-preset" class="t-preset"></p>
+            <div class="row">
+              <button id="t-preset-save" class="btn ghost small" type="button">지금 보드를 미리 배치로</button>
+              <button id="t-preset-clear" class="btn ghost small" type="button">비우기</button>
+            </div>
+            <label class="t-check"><input type="checkbox" id="t-lock"> 미리 배치한 부품 고정 (학생이 옮기거나 뺄 수 없음)</label>
+          </fieldset>
+          <fieldset class="t-group">
+            <legend>시작 코드</legend>
+            <div class="row">
+              <button id="t-starter-save" class="btn ghost small" type="button">지금 코드를 시작 코드로</button>
+              <button id="t-starter-reset" class="btn ghost small" type="button">기본 코드로</button>
+            </div>
+          </fieldset>
+          <div class="t-share">
+            <button id="t-link" class="btn small" type="button">학생용 활동 링크 복사</button>
+            <button id="t-export" class="btn ghost small" type="button" hidden>활동 파일 받기</button>
+            <button id="t-reset" class="btn ghost small" type="button">기본 설정으로</button>
+          </div>
+          <p class="note">설정은 이 브라우저에 저장돼요. 학생에게는 <b>활동 링크</b>나 활동 파일로 전달하세요. 학생이 링크를 열면 이 설정과 미리 배치 회로로 시작해요.</p>
+        </div>
         <div class="card mission">
           <h2 class="eyebrow">미션</h2>
           <div id="mission-list" class="mission-list"></div>
@@ -43,10 +77,18 @@
       </aside>
 
       <section class="bench">
-        <div class="bench-head">
-          <div>
-            <h2 class="eyebrow">부품 <small>핀으로 끌어다 놓거나 누르세요</small></h2>
+        <div class="proj-bar">
+          <span class="proj-name" id="proj-name" title="지금 작업 중인 프로젝트">새 프로젝트</span>
+          <div class="row">
+            <button id="proj-save" class="btn ghost small" type="button">저장</button>
+            <button id="proj-open" class="btn ghost small" type="button">불러오기</button>
+            <button id="proj-share" class="btn ghost small" type="button">공유 링크 복사</button>
+            <button id="proj-restart" class="btn ghost small" type="button" title="이 미션의 처음 회로와 시작 코드로 되돌려요">처음 상태로</button>
           </div>
+        </div>
+        <div class="bench-head">
+          <h2 class="eyebrow">부품 <small>핀으로 끌어다 놓거나 누르세요</small></h2>
+          <span id="palette-note" class="palette-note"></span>
         </div>
         <div id="palette" class="palette"></div>
         <div id="board" class="board"></div>
@@ -133,6 +175,25 @@
       </form>
     </section>
   </main>
+  <dialog id="proj-dialog" class="proj-dialog" aria-labelledby="pd-title">
+    <form id="pd-save" class="pd-save" method="dialog">
+      <h2 id="pd-title">프로젝트</h2>
+      <label for="pd-name" class="pd-label">이 브라우저에 저장할 이름</label>
+      <div class="row">
+        <input id="pd-name" maxlength="60" placeholder="예: 3반 12번 버튼 LED" autocomplete="off">
+        <button class="btn" type="submit" id="pd-save-btn">저장</button>
+      </div>
+    </form>
+    <h3 class="pd-sub">저장한 프로젝트</h3>
+    <ul id="pd-list" class="pd-list"></ul>
+    <div class="pd-foot">
+      <label class="btn ghost small file-btn" for="pd-file">파일에서 가져오기</label>
+      <input id="pd-file" type="file" accept=".json,application/json" class="visually-hidden">
+      <button id="pd-export" class="btn ghost small" type="button" hidden>지금 프로젝트를 파일로 받기</button>
+      <button id="pd-close" class="btn ghost small" type="button">닫기</button>
+    </div>
+    <p class="note">저장한 프로젝트는 이 컴퓨터의 이 브라우저에만 남아요. 다른 컴퓨터에서 이어 하려면 <b>공유 링크</b>나 파일을 쓰세요.</p>
+  </dialog>
   <div id="toast" class="toast" role="alert" hidden></div>
 </div>
 <script>/*__JS__*/</script>

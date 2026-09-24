@@ -21,6 +21,27 @@
    - ④ 실물에서 실행: USB로 연결된 피코에 같은 코드를 보내 실행·정지·`main.py`로 저장. 결과는 콘솔에 파란색으로 나와 가상 결과와 비교
 3. Thonny를 쓰는 교실이면 "코드 복사" 후 Thonny에 붙여 넣기
 
+## 저장·불러오기·공유 (SIM-18)
+
+- **자동 저장**: 미션별로 회로와 코드가 그 브라우저에 자동 저장됩니다. 새로고침하거나 다음 시간에 열어도 이어서 할 수 있어요.
+- **저장 / 불러오기**: 이름을 붙여 여러 개를 저장합니다 (예: "3반 12번 버튼 LED").
+- **공유 링크 복사**: 회로+코드가 주소 안에 들어 있는 링크를 만듭니다. 서버 없이 다른 컴퓨터에서 그대로 열리고, 과제 제출용으로도 쓸 수 있어요.
+- **파일로 받기 / 가져오기**: `.picosim.json` 파일로 주고받습니다 (받기는 설치 버전에서만).
+- **처음 상태로**: 미션의 처음 회로와 시작 코드로 되돌립니다. 되돌리기 전 상태는 자동 백업됩니다.
+
+## 교사 설정 (SIM-06)
+
+상단 **교사 설정**을 누르면 지금 미션의 활동을 설정합니다.
+
+- **쓸 수 있는 부품**: 체크한 부품만 학생 팔레트에 보입니다.
+- **미리 배치된 회로**: 보드에 회로를 꾸민 뒤 "지금 보드를 미리 배치로"를 누릅니다. **고정**하면 학생이 옮기거나 뺄 수 없습니다.
+- **시작 코드**: 에디터의 지금 코드를 학생의 시작 코드로 저장합니다.
+- **학생용 활동 링크 복사**: 이 설정이 담긴 링크를 학생에게 보내면, 학생 화면이 그 설정과 미리 배치 회로로 시작합니다. 학생이 하던 작업은 자동 백업됩니다.
+
+주의: 지금은 서버와 로그인이 없어서 교사 설정 버튼은 누구나 누를 수 있습니다. 설정은 각자의 브라우저에만 저장되므로 학생이 바꿔도 다른 학생에게 영향은 없습니다. 교사 권한 구분은 PRD의 로그인·대시보드 단계에서 붙입니다.
+
+기본 설정은 `src/ui/data.ts`의 각 미션 `allowed`, `preset`, `lockPreset`에서 바꿀 수 있습니다.
+
 ## 가상에서 일부러 재현한 실물 현상
 
 - 풀업/풀다운 없이 입력 핀을 읽으면 값이 흔들린다 (경고 표시)
@@ -43,7 +64,8 @@ src/engine/core.ts     가상 칩 엔진: rp2040js + 펌웨어 부팅, 실시간
 src/engine/worker.ts   화면이 멈추지 않도록 Web Worker에서 실행
 src/engine/client.ts   화면 ↔ 가상 칩 연결 (Worker가 막히면 같은 스레드에서 실행)
 src/real/serial.ts     실물 피코 연결 (Web Serial, Thonny·mpremote와 같은 raw REPL 방식)
-src/ui/data.ts         핀 배치, 부품, 미션, 오류 해설  ← 미션 추가는 여기
+src/ui/data.ts         핀 배치, 부품, 미션(활동 기본 설정 포함), 오류 해설  ← 미션 추가는 여기
+src/ui/project.ts      저장·공유 링크·파일, 교사 활동 설정
 src/ui/board.ts        가상 보드와 부품 그림, 끌어다 놓기
 src/ui/app.ts          화면 동작, 미션 점검, 학습 기록
 build.mjs              모든 것을 index.html 한 파일로 묶기
@@ -63,7 +85,7 @@ node build.mjs        # dist/index.html (설치용), dist/picosim-artifact.html 
 
 ## 대시보드 연동 (PRD 7장)
 
-모든 학습 행동이 `picosim:event`로 발생합니다: `run`, `run-end`, `error`(종류·줄), `stop`, `paste`(5줄 이상 붙여넣기), `part-add/move/remove`, `checkpoint`(통과 여부), `real-connect`, `real-run`, `real-run-end` 등.
+모든 학습 행동이 `picosim:event`로 발생합니다: `run`, `run-end`, `error`(종류·줄), `stop`, `paste`(5줄 이상 붙여넣기), `part-add/move/remove`, `checkpoint`(통과 여부), `project-save/open/share`, `activity-open`, `teacher-activity`, `real-connect`, `real-run`, `real-run-end` 등.
 
 ```js
 window.addEventListener('picosim:event', (e) => {

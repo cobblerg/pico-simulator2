@@ -4,6 +4,12 @@ import { RealPico } from '../real/serial';
 import { BoardView } from './board';
 import { createEditor } from './editor';
 import { MISSIONS, Mission, Part, PartKind, PART_INFO, PINS, pinByGp, nearestPin, LED_COLORS, LED_COLOR_NAMES, ERROR_HELP } from './data';
+import {
+  Activity, activityFor, defaultActivity, isCustomized, saveActivity, resetActivity,
+  loadWorkspace, saveWorkspace, startWorkspace, newId,
+  listProjects, saveProject, deleteProject, makeProject, parseFile, encodeLink, decodeHash,
+  ProjectFile, ActivityFile,
+} from './project';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -28,8 +34,9 @@ function logEvent(type: string, data: any = {}) {
 (window as any).picosimPins = () => Object.fromEntries(pins);
 
 // ---------- 상태 ----------
-let parts: Part[] = [{ id: 'p1', kind: 'led', gp: 15, color: 'red' }];
-let mission: Mission = MISSIONS[0];
+let mission: Mission = MISSIONS.find((m) => m.id === store.get('mission')) || MISSIONS[0];
+let parts: Part[] = loadWorkspace(mission).parts;
+let projectName = store.get('projectName:' + mission.id) || '새 프로젝트';
 const passed = new Set<string>(JSON.parse(store.get('passed') || '[]'));
 const pins = new Map<number, PinReport>();
 let running = false;
@@ -37,7 +44,6 @@ let runEdges: [number, number, number][] = [];
 let runStdout = '';
 let runPins: { gp: number; freq: number; duty: number }[] = [];
 let m3Seen = false;
-let partSeq = 2;
 
 // ---------- 화면 요소 ----------
 const consoleEl = $('#console');
@@ -63,20 +69,41 @@ function toast(html: string, kind: 'warn' | 'info' = 'info') {
 }
 
 // ---------- 에디터 ----------
-const editor = createEditor($('#editor'), store.get('code:' + mission.id) || mission.starter, (code, pasteLines) => {
-  store.set('code:' + mission.id, code);
+const editor = createEditor($('#editor'), loadWorkspace(mission).code, (code, pasteLines) => {
+  saveWsSoon();
   editor.markError(null);
   if (pasteLines >= 5) logEvent('paste', { lines: pasteLines, mission: mission.id });
 });
 
+// ---------- 작업 자동 저장 (SIM-18) ----------
+let saveTimer: any = null;
+function saveWsSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveWsNow, 400);
+}
+function saveWsNow() {
+  clearTimeout(saveTimer);
+  saveWorkspace(mission, { parts, code: editor.get() });
+}
+window.addEventListener('pagehide', saveWsNow);
+
 // ---------- 보드 ----------
 function placePart(kind: PartKind, gp: number, moveId?: string): string | null {
+    const act = activityFor(mission);
+    if (!moveId && act.allowed && !act.allowed.includes(kind)) {
+      toast(`이 활동에서는 <b>${PART_INFO[kind].name}</b>를 쓰지 않아요.`, 'warn');
+      return 'not-allowed';
+    }
     const allowed = PART_INFO[kind].allowed;
     if (allowed && !allowed.includes(gp)) {
       toast(`<b>${PART_INFO[kind].name}</b>는 아날로그 입력이 되는 <b>GP26·GP27·GP28</b>에만 연결할 수 있어요. (실물도 같아요)`, 'warn');
       return 'bad';
     }
     const occupied = parts.find((p) => p.gp === gp && p.id !== moveId);
+    if (occupied?.locked) {
+      toast(`GP${gp}에는 선생님이 고정한 ${PART_INFO[occupied.kind].name}가 있어요.`, 'warn');
+      return 'busy';
+    }
     if (occupied) {
       toast(`GP${gp}에는 이미 ${PART_INFO[occupied.kind].name}가 연결돼 있어요. 다른 핀을 고르세요.`, 'warn');
       return 'busy';
@@ -86,7 +113,7 @@ function placePart(kind: PartKind, gp: number, moveId?: string): string | null {
       logEvent('part-move', { kind, from: p.gp, to: gp });
       p.gp = gp;
     } else {
-      const p: Part = { id: 'p' + partSeq++, kind, gp };
+      const p: Part = { id: newId(), kind, gp };
       if (kind === 'led') p.color = 'red';
       if (kind === 'button') p.wiring = 'gnd';
       if (kind === 'pot') p.value = 0.5;
@@ -125,6 +152,9 @@ function partsChanged() {
   for (const p of parts) if (p.kind === 'pot') client.adc(p.gp - 26, p.value ?? 0.5);
   renderNeeds();
   renderBridge();
+  renderTeacher();
+  renderPinStrip();
+  saveWsSoon();
 }
 
 function syncInputs() {
@@ -151,9 +181,10 @@ function renderInspector(id: string | null) {
   } else if (p.kind === 'button') {
     extra = `<label class="field">다른 쪽 다리<select id="btn-wiring"><option value="gnd" ${p.wiring !== '3v3' ? 'selected' : ''}>GND (코드: Pin.PULL_UP)</option><option value="3v3" ${p.wiring === '3v3' ? 'selected' : ''}>3V3 (코드: Pin.PULL_DOWN)</option></select></label>`;
   }
+  if (p.locked) extra = extra.replace(/<select /g, '<select disabled ');
   box.innerHTML = `<div class="insp-head"><b>${PART_INFO[p.kind].name}</b><span class="chip">GP${p.gp} · ${pin.phys}번 핀</span></div>
-    <p class="muted">${PART_INFO[p.kind].hint}</p>${extra}
-    <button class="btn ghost small" id="part-del" type="button">부품 빼기</button>`;
+    <p class="muted">${p.locked ? '선생님이 고정한 부품이에요. 옮기거나 뺄 수 없어요.' : PART_INFO[p.kind].hint}</p>${extra}
+    ${p.locked ? '' : '<button class="btn ghost small" id="part-del" type="button">부품 빼기</button>'}`;
   $('#led-color')?.addEventListener('change', (e) => {
     p.color = (e.target as HTMLSelectElement).value;
     partsChanged();
@@ -162,7 +193,7 @@ function renderInspector(id: string | null) {
     p.wiring = (e.target as HTMLSelectElement).value as any;
     partsChanged();
   });
-  $('#part-del').addEventListener('click', () => {
+  $('#part-del')?.addEventListener('click', () => {
     parts = parts.filter((x) => x.id !== p.id);
     logEvent('part-remove', { kind: p.kind, gp: p.gp });
     board.selected = null;
@@ -172,7 +203,18 @@ function renderInspector(id: string | null) {
 
 // ---------- 팔레트 ----------
 const palette = $('#palette');
-(Object.keys(PART_INFO) as PartKind[]).forEach((k) => {
+function renderPalette() {
+  const act = activityFor(mission);
+  const kinds = (Object.keys(PART_INFO) as PartKind[]).filter((k) => !act.allowed || act.allowed.includes(k));
+  palette.innerHTML = '';
+  $('#palette-note').textContent = act.allowed ? '이 활동에서 쓰는 부품만 보여요' : '';
+  if (!kinds.length) {
+    palette.innerHTML = '<p class="palette-empty">이 활동은 부품 없이 보드의 내장 LED만 써요.</p>';
+    return;
+  }
+  kinds.forEach(addPaletteItem);
+}
+function addPaletteItem(k: PartKind) {
   const b = document.createElement('button');
   b.type = 'button';
   b.className = `pal-item k-${k}`;
@@ -196,7 +238,7 @@ const palette = $('#palette');
     else placePart(k, free);
   });
   palette.appendChild(b);
-});
+}
 
 // ---------- 미션 ----------
 function renderMissionList() {
@@ -208,12 +250,8 @@ function renderMissionList() {
     b.addEventListener('click', () => {
       const m = MISSIONS.find((x) => x.id === b.dataset.m)!;
       if (m.id === mission.id) return;
-      mission = m;
-      editor.set(store.get('code:' + m.id) || m.starter);
-      editor.markError(null);
-      checkEl.hidden = true;
+      openMission(m);
       logEvent('mission-open', { mission: m.id });
-      renderMission();
     }),
   );
 }
@@ -250,6 +288,258 @@ function renderMission() {
     d.addEventListener('click', () => editor.insertLine(b.code));
     bl.appendChild(d);
   }
+}
+
+function openMission(m: Mission, ws = loadWorkspace(m)) {
+  saveWsNow();
+  mission = m;
+  store.set('mission', m.id);
+  parts = ws.parts;
+  board.selected = null;
+  editor.set(ws.code);
+  editor.markError(null);
+  checkEl.hidden = true;
+  setProjectName(store.get('projectName:' + m.id) || '새 프로젝트');
+  renderMission();
+  renderPalette();
+  partsChanged();
+  saveWsNow();
+}
+
+function setProjectName(n: string) {
+  projectName = n;
+  store.set('projectName:' + mission.id, n);
+  $('#proj-name').textContent = `${n} · ${mission.title}`;
+}
+
+// ---------- 저장·불러오기·공유 (SIM-18) ----------
+const dlg = $<HTMLDialogElement>('#proj-dialog');
+function currentProject(name = projectName) {
+  return makeProject(name, mission, { parts, code: editor.get() });
+}
+function renderProjectList() {
+  const list = listProjects();
+  $('#pd-list').innerHTML = list.length
+    ? list
+        .map((p, i) => {
+          const m = MISSIONS.find((x) => x.id === p.mission);
+          const when = new Date(p.savedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          return `<li><div class="pd-info"><b>${esc(p.name)}</b><small>${esc(m?.title || '')} · 부품 ${p.parts.length}개 · ${when}</small></div>
+            <button class="btn ghost small" type="button" data-open="${i}">열기</button>
+            <button class="btn ghost small danger" type="button" data-del="${i}" aria-label="${esc(p.name)} 지우기">지우기</button></li>`;
+        })
+        .join('')
+    : '<li class="pd-empty">아직 저장한 프로젝트가 없어요.</li>';
+  $('#pd-list').querySelectorAll<HTMLButtonElement>('[data-open]').forEach((b) =>
+    b.addEventListener('click', () => {
+      applyProject(list[+b.dataset.open!]);
+      dlg.close();
+    }),
+  );
+  $('#pd-list').querySelectorAll<HTMLButtonElement>('[data-del]').forEach((b) => {
+    let armed = false;
+    b.addEventListener('click', () => {
+      // 확인 대화상자 대신 두 번 누르기
+      if (!armed) {
+        armed = true;
+        b.textContent = '한 번 더';
+        setTimeout(() => { armed = false; b.textContent = '지우기'; }, 2500);
+        return;
+      }
+      deleteProject(list[+b.dataset.del!].name);
+      renderProjectList();
+    });
+  });
+}
+function openDialog(focusName: boolean) {
+  $<HTMLInputElement>('#pd-name').value = projectName === '새 프로젝트' ? '' : projectName;
+  renderProjectList();
+  try { dlg.showModal(); } catch { dlg.setAttribute('open', ''); }
+  if (focusName) $<HTMLInputElement>('#pd-name').focus();
+}
+$('#proj-save').addEventListener('click', () => openDialog(true));
+$('#proj-open').addEventListener('click', () => openDialog(false));
+$('#pd-close').addEventListener('click', () => dlg.close());
+$('#pd-save').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $<HTMLInputElement>('#pd-name').value.trim();
+  if (!name) {
+    $<HTMLInputElement>('#pd-name').focus();
+    toast('저장할 이름을 적어 주세요.', 'warn');
+    return;
+  }
+  setProjectName(name);
+  saveProject(currentProject(name));
+  saveWsNow();
+  logEvent('project-save', { name, mission: mission.id });
+  renderProjectList();
+  toast(`<b>${esc(name)}</b>(으)로 저장했어요.`);
+});
+
+function applyProject(p: ProjectFile) {
+  saveWsNow();
+  const m = MISSIONS.find((x) => x.id === p.mission) || mission;
+  const act = activityFor(m);
+  // 교사가 고정한 부품은 활동 설정을 따르고, 나머지는 프로젝트대로
+  const locked = act.lockPreset ? startWorkspace(m).parts : [];
+  const free = p.parts.filter(({ locked: l, ...x }) => !locked.some((q) => q.gp === x.gp)).map(({ locked: l, ...x }) => ({ ...x, id: newId() }));
+  openMission(m, { parts: [...locked, ...free], code: p.code });
+  setProjectName(p.name);
+  logEvent('project-open', { name: p.name, mission: m.id });
+  toast(`<b>${esc(p.name)}</b>을(를) 열었어요.`);
+}
+
+async function copyText(text: string, okMsg: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(okMsg);
+  } catch {
+    // 복사가 막히면 알림 안에 주소를 보여 준다
+    toast(`복사가 막혀 있어요. 아래 주소를 직접 복사하세요.<br><input class="link-box" readonly value="${esc(text)}" aria-label="공유 주소">`, 'warn');
+    setTimeout(() => (document.querySelector('.link-box') as HTMLInputElement)?.select(), 50);
+  }
+}
+
+$('#proj-share').addEventListener('click', async () => {
+  saveWsNow();
+  const link = await encodeLink(currentProject());
+  logEvent('project-share', { mission: mission.id, length: link.length });
+  copyText(link, '공유 링크를 복사했어요. 이 링크를 열면 지금 회로와 코드가 그대로 열려요.');
+});
+
+let restartArmed = false;
+$('#proj-restart').addEventListener('click', () => {
+  if (!restartArmed) {
+    restartArmed = true;
+    $('#proj-restart').textContent = '정말 되돌릴까요?';
+    setTimeout(() => { restartArmed = false; $('#proj-restart').textContent = '처음 상태로'; }, 3000);
+    return;
+  }
+  restartArmed = false;
+  $('#proj-restart').textContent = '처음 상태로';
+  // 되돌리기 전에 지금 상태를 자동 백업
+  if (parts.length || editor.get() !== activityFor(mission).starter) saveProject(currentProject(`자동 백업 ${new Date().toLocaleTimeString('ko-KR')}`));
+  openMission(mission, startWorkspace(mission));
+  setProjectName('새 프로젝트');
+  logEvent('project-restart', { mission: mission.id });
+  toast('처음 회로와 시작 코드로 되돌렸어요. 이전 상태는 <b>불러오기</b>에 자동 백업돼 있어요.');
+});
+
+function downloadJson(name: string, obj: unknown) {
+  download(name, new TextEncoder().encode(JSON.stringify(obj, null, 2)), 'application/json');
+}
+if (__STANDALONE__) {
+  $('#pd-export').hidden = false;
+  $('#pd-export').addEventListener('click', () => {
+    downloadJson(`${projectName.replace(/[\\/:*?"<>|]/g, '_')}.picosim.json`, currentProject());
+    logEvent('project-export');
+  });
+}
+$<HTMLInputElement>('#pd-file').addEventListener('change', async (e) => {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const f = parseFile(JSON.parse(await file.text()));
+    if (!f) throw new Error('bad');
+    dlg.close();
+    if (f.kind === 'project') applyProject(f);
+    else applyActivity(f, 'file');
+  } catch {
+    toast('PicoSim 프로젝트 파일이 아니에요. <b>.picosim.json</b> 파일을 골라 주세요.', 'warn');
+  }
+});
+
+// ---------- 교사 설정 (SIM-06) ----------
+const teacherEl = $('#teacher');
+$('#teacher-toggle').addEventListener('click', () => {
+  const open = teacherEl.hidden;
+  teacherEl.hidden = !open;
+  $('#teacher-toggle').setAttribute('aria-pressed', String(open));
+  if (open) {
+    renderTeacher();
+    teacherEl.scrollIntoView({ block: 'nearest' });
+  }
+});
+
+function describeParts(list: { kind: PartKind; gp: number }[]) {
+  return list.map((p) => `${PART_INFO[p.kind].name} GP${p.gp}`).join(', ');
+}
+
+function renderTeacher() {
+  if (teacherEl.hidden) return;
+  const act = activityFor(mission);
+  $('#t-mission').textContent = `${MISSIONS.indexOf(mission) + 1}. ${mission.title}`;
+  $('#t-custom').textContent = isCustomized(mission) ? '바꾼 설정' : '';
+  $('#t-allowed').innerHTML = (Object.keys(PART_INFO) as PartKind[])
+    .map((k) => `<label><input type="checkbox" value="${k}" ${!act.allowed || act.allowed.includes(k) ? 'checked' : ''}> ${PART_INFO[k].name}</label>`)
+    .join('');
+  $('#t-allowed').querySelectorAll('input').forEach((i) =>
+    i.addEventListener('change', () => {
+      const chosen = [...$('#t-allowed').querySelectorAll<HTMLInputElement>('input:checked')].map((x) => x.value as PartKind);
+      const all = chosen.length === Object.keys(PART_INFO).length;
+      updateActivity({ allowed: all ? null : chosen });
+    }),
+  );
+  $('#t-preset').textContent = act.preset.length ? `${describeParts(act.preset)}` : '없음 · 학생이 빈 보드에서 시작해요';
+  $<HTMLInputElement>('#t-lock').checked = act.lockPreset;
+  $<HTMLInputElement>('#t-lock').disabled = !act.preset.length;
+}
+
+function updateActivity(change: Partial<Activity>, msg?: string) {
+  const next = { ...activityFor(mission), ...change };
+  saveActivity(mission, next);
+  logEvent('teacher-activity', { mission: mission.id, change: Object.keys(change) });
+  // 고정 표시를 지금 보드에 반영
+  if ('lockPreset' in change || 'preset' in change) {
+    parts = parts.map((p) => ({ ...p, locked: next.lockPreset && next.preset.some((q) => q.gp === p.gp && q.kind === p.kind) ? true : undefined }));
+  }
+  renderPalette();
+  partsChanged();
+  if (msg) toast(msg);
+}
+
+$('#t-preset-save').addEventListener('click', () => {
+  const preset = parts.map(({ id, pressed, locked, ...p }) => p);
+  updateActivity({ preset }, preset.length ? `미리 배치 회로로 저장했어요: ${describeParts(preset)}` : '보드가 비어 있어 미리 배치 회로를 비웠어요.');
+});
+$('#t-preset-clear').addEventListener('click', () => updateActivity({ preset: [], lockPreset: false }, '미리 배치 회로를 비웠어요.'));
+$<HTMLInputElement>('#t-lock').addEventListener('change', (e) => updateActivity({ lockPreset: (e.target as HTMLInputElement).checked }));
+$('#t-starter-save').addEventListener('click', () => updateActivity({ starter: editor.get() }, '지금 코드를 시작 코드로 저장했어요.'));
+$('#t-starter-reset').addEventListener('click', () => updateActivity({ starter: mission.starter }, '시작 코드를 기본값으로 되돌렸어요.'));
+$('#t-reset').addEventListener('click', () => {
+  resetActivity(mission);
+  updateActivity(defaultActivity(mission), '이 미션의 설정을 기본값으로 되돌렸어요.');
+  resetActivity(mission);
+  renderTeacher();
+});
+function currentActivityFile(): ActivityFile {
+  return { app: 'picosim', v: 1, kind: 'activity', mission: mission.id, activity: activityFor(mission) };
+}
+$('#t-link').addEventListener('click', async () => {
+  const link = await encodeLink(currentActivityFile());
+  logEvent('teacher-link', { mission: mission.id });
+  copyText(link, '학생용 활동 링크를 복사했어요. 학생이 열면 이 설정과 미리 배치 회로로 시작해요.');
+});
+if (__STANDALONE__) {
+  $('#t-export').hidden = false;
+  $('#t-export').addEventListener('click', () => downloadJson(`활동-${mission.id}.picosim.json`, currentActivityFile()));
+}
+
+function applyActivity(f: ActivityFile, via: 'link' | 'file') {
+  saveWsNow();
+  const m = MISSIONS.find((x) => x.id === f.mission)!;
+  // 학생이 하던 작업은 지우지 않고 백업해 둔다
+  const prev = loadWorkspace(m);
+  if (prev.parts.length || prev.code !== activityFor(m).starter) {
+    saveProject(makeProject(`자동 백업 ${m.title} ${new Date().toLocaleTimeString('ko-KR')}`, m, prev));
+  }
+  saveActivity(m, f.activity);
+  openMission(m, startWorkspace(m));
+  setProjectName('새 프로젝트');
+  logEvent('activity-open', { mission: m.id, via });
+  toast(`선생님이 준비한 <b>${esc(m.title)}</b> 활동을 열었어요.`);
 }
 
 // ---------- 오류 해설 ----------
@@ -660,7 +950,23 @@ $('#real-stop').addEventListener('click', () => real.stop());
 
 // ---------- 시작 ----------
 renderMission();
+renderPalette();
+setProjectName(projectName);
 board.render(parts);
+renderNeeds();
+renderBridge();
+// 공유 링크로 열었으면 적용하고 주소를 정리한다 (새로고침해도 다시 덮어쓰지 않게)
+function openFromHash() {
+  if (!/^#[pa]=/.test(location.hash)) return;
+  decodeHash(location.hash).then((f) => {
+    history.replaceState(null, '', location.pathname + location.search);
+    if (!f) return toast('링크가 잘렸거나 올바르지 않아요. 링크를 다시 받아 주세요.', 'warn');
+    if (f.kind === 'project') applyProject(f);
+    else applyActivity(f, 'link');
+  });
+}
+openFromHash();
+window.addEventListener('hashchange', openFromHash); // 열려 있는 창에 링크를 붙여 넣은 경우
 renderInspector(null);
 renderPinStrip();
 setStatus('boot', '켜는 중');

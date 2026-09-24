@@ -30,6 +30,7 @@ export type Part = {
   wiring?: 'gnd' | '3v3'; // 버튼: GND 쪽(PULL_UP) / 3V3 쪽(PULL_DOWN)
   value?: number; // 가변저항 0..1
   pressed?: boolean;
+  locked?: boolean; // 교사가 고정한 부품 (옮기기·빼기 불가)
 };
 
 export const PART_INFO: Record<PartKind, { name: string; wire: string; hint: string; allowed?: number[] }> = {
@@ -51,11 +52,16 @@ export type Mission = {
   starter: string;
   blocks: { label: string; code: string }[];
   hint: string;
+  // 활동 설정 기본값 (교사 설정 화면에서 바꿀 수 있다)
+  allowed?: PartKind[]; // 쓸 수 있는 부품 (없으면 제한 없음)
+  preset?: Omit<Part, 'id'>[]; // 미리 배치된 회로
+  lockPreset?: boolean; // 미리 배치 부품 고정
 };
 
 export const MISSIONS: Mission[] = [
   {
     id: 'm1',
+    allowed: [],
     title: '내장 LED 켜고 끄기',
     goal: '보드의 내장 LED를 1초 동안 켰다가 끄세요.',
     needs: [],
@@ -69,6 +75,7 @@ export const MISSIONS: Mission[] = [
   },
   {
     id: 'm2',
+    allowed: ['led'],
     title: 'GP15 LED 3번 깜빡이기',
     goal: 'LED를 GP15에 연결하고 0.5초 간격으로 3번 깜빡이세요.',
     needs: [{ kind: 'led', gp: 15 }],
@@ -82,6 +89,7 @@ export const MISSIONS: Mission[] = [
   },
   {
     id: 'm3',
+    allowed: ['led', 'button'],
     title: '버튼으로 LED 켜기',
     goal: 'GP14 버튼을 누르는 동안만 GP15 LED가 켜지게 하세요.',
     needs: [
@@ -99,6 +107,7 @@ export const MISSIONS: Mission[] = [
   },
   {
     id: 'm4',
+    allowed: ['pot', 'led'],
     title: '가변저항 값 읽기',
     goal: 'GP26의 가변저항 값을 0.2초마다 출력하고, 손잡이를 움직여 값이 바뀌는지 보세요.',
     needs: [{ kind: 'pot', gp: 26 }],
@@ -111,6 +120,7 @@ export const MISSIONS: Mission[] = [
   },
   {
     id: 'm5',
+    allowed: ['buzzer', 'led'],
     title: '부저로 도레미',
     goal: 'GP16 수동 부저로 도(262Hz)·레(294Hz)·미(330Hz)를 0.3초씩 연주하세요.',
     needs: [{ kind: 'buzzer', gp: 16 }],
@@ -123,6 +133,9 @@ export const MISSIONS: Mission[] = [
   },
   {
     id: 'm6',
+    allowed: ['servo'],
+    preset: [{ kind: 'servo', gp: 17 }],
+    lockPreset: true,
     title: '서보 각도 바꾸기',
     goal: 'GP17 서보를 0도 → 90도 → 180도로 1초씩 움직이세요.',
     needs: [{ kind: 'servo', gp: 17 }],
