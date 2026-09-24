@@ -6,6 +6,8 @@ import { createEditor } from './editor';
 import { Mission, Part, PartKind, PART_INFO, PINS, pinByGp, nearestPin, LED_COLORS, LED_COLOR_NAMES, ERROR_HELP } from './data';
 import { getSimulatorMissions, getMissionById, getMissionIndex, getDefaultMission } from './content-access';
 import type { CheckpointEvaluationContext } from './checkpoint';
+import { evaluateCheckpoint } from './checkpoint-evaluator';
+import { selectCheckpoints } from './checkpoint-select';
 import {
   Activity, activityFor, defaultActivity, isCustomized, saveActivity, resetActivity,
   loadWorkspace, saveWorkspace, startWorkspace, newId,
@@ -597,16 +599,33 @@ function checkAtEnd(ok: boolean) {
   }
   if (!ok) return;
   if (mission.id === 'm1') {
+    // 성공/실패의 유일한 판정기는 evaluateCheckpoint다 (first-on/first-off, >=800ms
+    // semantics는 checkpoint-evaluator.ts가 전담 — 여기서 다시 계산하지 않는다).
+    const ctx = buildCheckpointContext();
+    const cps1 = selectCheckpoints(mission, 'end');
+    // checkpoint가 하나도 없으면(콘텐츠 데이터 오류 등) Array.every()가 공허하게
+    // true가 되는 fail-open을 막기 위해 길이 검사를 명시적으로 함께 건다.
+    const ok1 = cps1.length > 0 && cps1.every((cp) => evaluateCheckpoint(cp.rule, ctx).result.status === 'passed');
+    // 아래 edge 조회는 판정에 쓰지 않는다 — 이미 확정된 결과에 어떤 기존 문장을
+    // 붙일지 고르기 위한 조회일 뿐이다(기존 메시지 4종 그대로 보존).
     const e = runEdges.filter((x) => x[0] === 25);
     const on = e.find((x) => x[1] === 1);
     const off = on && e.find((x) => x[1] === 0 && x[2] > on[2]);
-    if (on && off && off[2] - on[2] >= 800) showCheck(true, `내장 LED가 ${((off[2] - on[2]) / 1000).toFixed(1)}초 동안 켜졌어요.`);
+    if (ok1 && on && off) showCheck(true, `내장 LED가 ${((off[2] - on[2]) / 1000).toFixed(1)}초 동안 켜졌어요.`);
     else if (on && !off) showCheck(false, 'LED를 켰지만 끄지 않았어요.');
     else if (on && off) showCheck(false, `켜진 시간이 ${((off[2] - on[2]) / 1000).toFixed(2)}초예요. 1초 동안 켜 두세요.`);
     else showCheck(false, '내장 LED가 한 번도 켜지지 않았어요.');
   } else if (mission.id === 'm2') {
+    // 성공/실패의 유일한 판정기는 evaluateCheckpoint다 (rises>=min semantics는
+    // checkpoint-evaluator.ts가 전담 — 여기서 다시 계산하지 않는다).
+    const ctx = buildCheckpointContext();
+    const cps2 = selectCheckpoints(mission, 'end');
+    // checkpoint가 하나도 없으면 Array.every()가 공허하게 true가 되는 fail-open을
+    // 막기 위해 길이 검사를 명시적으로 함께 건다.
+    const ok2 = cps2.length > 0 && cps2.every((cp) => evaluateCheckpoint(cp.rule, ctx).result.status === 'passed');
+    // 메시지에 들어가는 횟수 표시만을 위한 조회 — 판정에는 쓰이지 않는다.
     const rises = runEdges.filter((x) => x[0] === 15 && x[1] === 1).length;
-    if (rises >= 3) showCheck(true, `GP15 LED가 ${rises}번 켜졌어요.`);
+    if (ok2) showCheck(true, `GP15 LED가 ${rises}번 켜졌어요.`);
     else showCheck(false, `GP15 LED가 ${rises}번 켜졌어요. 3번 깜빡여야 해요.`);
   } else if (mission.id === 'm5') {
     checkLive();
