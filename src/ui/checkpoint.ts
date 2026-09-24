@@ -37,3 +37,47 @@ export type Checkpoint = {
   when: 'live' | 'end' | 'both';
   rule: CheckpointRule;
 };
+
+// ---------- 0-C2: evaluator 입출력 타입 ----------
+//
+// 아래 타입들은 checkpoint-evaluator.ts가 사용하는 입출력 타입이다.
+// 이 파일(checkpoint.ts)은 계속 "타입 전용, 외부 의존 0개" 모듈로 유지하고,
+// 실제 판정 로직은 checkpoint-evaluator.ts에만 둔다.
+
+// app.ts의 runEdges 원소와 같은 모양(부품/DOM 타입 없이 pin/level/시각만).
+export type EdgeEvent = { pin: number; level: 0 | 1; atMs: number };
+
+// app.ts의 runPins 원소와 같은 모양.
+export type PwmSample = { pin: number; freq: number; duty: number };
+
+// engine/core.ts의 PinReport와 구조적으로 호환되는(하지만 import하지 않는)
+// 최소 스냅샷 — evaluator가 실제로 읽는 mode/level만 담는다.
+export type PinSnapshot = { mode: 'out' | 'in' | 'pwm' | 'off'; level: 0 | 1 };
+
+// Board 전체, app.ts 상태 전체, DOM을 넘기지 않고 6개 rule이 실제로 읽는
+// "관측 이력의 스냅샷"만 담은 최소 컨텍스트.
+export type CheckpointEvaluationContext = {
+  edges: EdgeEvent[]; // m1(edge-hold), m2(edge-count)
+  pwmSamples: PwmSample[]; // m5(pwm-freq-set), m6(pwm-duty-angle-set)
+  stdout: string; // m4(stdout-range)
+  pressedInputs: Set<number>; // m3(press-toggle) — 현재 눌린 입력 부품의 gp
+  pins: Map<number, PinSnapshot>; // m3(press-toggle) — 현재 핀 상태
+};
+
+// 0-C2 보완: {passed:boolean} 하나로는 기존 checkAtEnd/checkLive의 실제 UI 의미를
+// 재현할 수 없다는 것이 밝혀져 3상태 모델로 바꿨다(0-C2 최초 구현 직후, commit 전).
+//
+// - pending: 아직 성공 조건이 충족되지 않았지만, 기존 UI가 "실패"로 표시하지
+//            않는 상태 (showCheck가 호출되지 않는 경우) — m3/m4/m5/m6가 여기 해당.
+// - failed : 현재 판정 시점에서 실패가 확정된 상태 (showCheck(false, ...)가 호출됨)
+//            — m1/m2의 end 판정만 evaluator 레벨에서 이 값을 낸다.
+// - passed : 성공 조건 충족 (showCheck(true, ...))
+//
+// passed:boolean + pending:boolean 같은 복수 boolean 조합은 쓰지 않는다 —
+// 모순된 조합(예: passed:true인데 pending도 true)이 타입상 아예 불가능하도록
+// 단일 discriminated 필드로 둔다.
+export type EvaluationResult = { status: 'pending' | 'failed' | 'passed' };
+
+// m3(press-toggle) 전용 상태만 표현한다. 범용 상태 머신 프레임워크가 아니다.
+// press-toggle이 아닌 rule은 이 상태를 읽지도 쓰지도 않는다.
+export type CheckpointRuntimeState = { seen?: boolean };
