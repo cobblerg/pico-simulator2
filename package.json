@@ -19,6 +19,7 @@
     "@lezer/highlight": "^1.2.3",
     "@supabase/supabase-js": "^2.117.1",
     "esbuild": "^0.28.2",
+    "openai": "^7.23.0",
     "rp2040js": "^1.3.4",
     "typescript": "^7.0.2",
     "uf2": "^2.0.0"

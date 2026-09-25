@@ -96,6 +96,19 @@ const feedbackErrorMsgEl = el<HTMLElement>('t-feedback-error-msg');
 const feedbackRetryBtn = el<HTMLButtonElement>('t-feedback-retry');
 const feedbackUl = el<HTMLUListElement>('t-feedback-ul');
 
+const aiSectionEl = el<HTMLElement>('t-ai-section');
+const aiAnalyzeBtn = el<HTMLButtonElement>('t-ai-analyze');
+const aiLoadingEl = el<HTMLElement>('t-ai-loading');
+const aiEmptyEl = el<HTMLElement>('t-ai-empty');
+const aiErrorEl = el<HTMLElement>('t-ai-error');
+const aiErrorMsgEl = el<HTMLElement>('t-ai-error-msg');
+const aiRetryBtn = el<HTMLButtonElement>('t-ai-retry');
+const aiResultEl = el<HTMLElement>('t-ai-result');
+const aiSummaryEl = el<HTMLElement>('t-ai-summary');
+const aiObservationsUl = el<HTMLUListElement>('t-ai-observations');
+const aiSuggestedEl = el<HTMLElement>('t-ai-suggested');
+const aiCopyBtn = el<HTMLButtonElement>('t-ai-copy');
+
 type UiState = 'logged-out' | 'checking' | 'approved' | 'not-approved';
 
 function setUiState(state: UiState, displayName?: string): void {
@@ -181,6 +194,23 @@ function setFeedbackSubState(state: FeedbackSubState): void {
   feedbackErrorEl.hidden = state !== 'error';
 }
 
+// AI 분석 영역 전용 하위 상태 — ApprovedSubState/FeedbackSubState와 완전히
+// 독립적인 세 번째 축이다(0-D11-A). 'idle'은 학생을 선택했지만 아직
+// [AI 학습과정 분석] 버튼을 누르지 않은 초기 상태이고, 'empty'는 서버가
+// 학습 기록이 없어 OpenAI를 호출하지 않고 analysis:null을 돌려준 경우다
+// (0-D11-A §8) — 이 둘을 구분해야 "아직 분석을 요청하지 않음"과 "분석할
+// 기록이 없음"을 다르게 보여줄 수 있다. aiAnalyzeBtn 자체는 이 상태와
+// 무관하게 항상 보이며(다시 분석 요청 가능), loading 중에만 disabled로
+// 막는다(runAIAnalysis에서 처리).
+type AISubState = null | 'idle' | 'loading' | 'empty' | 'result' | 'error';
+
+function setAISubState(state: AISubState): void {
+  aiLoadingEl.hidden = state !== 'loading';
+  aiEmptyEl.hidden = state !== 'empty';
+  aiErrorEl.hidden = state !== 'error';
+  aiResultEl.hidden = state !== 'result';
+}
+
 type TeacherMeResponse =
   | { status: 'ok'; teacher: { teacherId: string; displayName: string } }
   | { status: 'not_approved' };
@@ -215,6 +245,14 @@ type TeacherTimelineResponse = { status: 'ok'; events: TimelineEvent[] } | { sta
 type TeacherFeedbackItem = { feedbackId: string; content: string; eventId: string | null; createdAt: string; updatedAt: string };
 type TeacherFeedbackListResponse = { status: 'ok'; feedback: TeacherFeedbackItem[] } | { status: 'not_approved' };
 type TeacherFeedbackWriteResponse = { status: 'ok'; feedback: TeacherFeedbackItem } | { status: 'not_approved' };
+
+// ai-learning-analysis.ts의 AIAnalysisResult와 동일한 shape. analysis는
+// 검증된 enrollment에 학습 기록이 하나도 없을 때만 null이다(서버가
+// OpenAI를 호출하지 않고 즉시 반환하는 정상적인 빈 상태, 0-D11-A §8) —
+// 그 외의 모든 실패(인증/권한/provider 오류 등)는 non-200 응답으로 온다.
+type AIObservation = { text: string; evidence: string[] };
+type AIAnalysisResultUI = { summary: string; observations: AIObservation[]; suggestedFeedback: string };
+type AIAnalysisResponse = { status: 'ok'; analysis: AIAnalysisResultUI | null } | { status: 'not_approved' };
 
 // 실제로 존재하는 20개 event_type만 다룬다(learning-event-handler.ts의
 // ALLOWED_EVENT_TYPES와 정확히 같은 집합) — 새 event type을 여기서 만들어
@@ -284,6 +322,13 @@ let currentFeedback: TeacherFeedbackItem[] = [];
 let editingFeedbackId: string | null = null;
 let feedbackRetryAction: (() => void) | null = null;
 
+// AI 분석 결과는 어디에도 저장하지 않는다 — 이 모듈 상태가 유일한 보관
+// 위치이며, 학생/학급 전환이나 로그아웃 시 resetDashboardState()/
+// selectClass()/selectStudent()가 곧바로 비운다(0-D11-A 확정 결정:
+// "ephemeral only — DB/localStorage/sessionStorage에 저장하지 않는다").
+let currentAIAnalysis: AIAnalysisResultUI | null = null;
+let aiRetryAction: (() => void) | null = null;
+
 function resetFeedbackForm(): void {
   editingFeedbackId = null;
   feedbackInput.value = '';
@@ -306,17 +351,27 @@ function resetDashboardState(): void {
   feedbackRetryAction = null;
   resetFeedbackForm();
   setFeedbackSubState(null);
+  aiSectionEl.hidden = true;
+  currentAIAnalysis = null;
+  aiRetryAction = null;
+  aiAnalyzeBtn.disabled = false;
+  setAISubState(null);
   setApprovedSubState(null);
   // hidden 속성만으로는 "화면에서 사라졌다"일 뿐, 이전 교사의 실제 렌더링된
   // DOM 노드는 다음 성공적인 렌더링 전까지 그대로 남아있다 — 일반적인 학급/
   // 학생 전환에서는 hidden만으로 충분했지만(재렌더링 전에는 어차피 사용자가
   // 볼 수 없으므로), 로그아웃 없이 다른 승인 교사로 바뀌는 경우(0-D10-E
-  // security fix가 다루는 시나리오)에는 애매함을 남기지 않기 위해 네 목록의
-  // 실제 DOM 내용을 여기서 완전히 비운다.
+  // security fix가 다루는 시나리오)에는 애매함을 남기지 않기 위해 다섯
+  // 목록/영역의 실제 DOM 내용을 여기서 완전히 비운다(AI 분석 결과도
+  // 동일하게 취급 — 이전 학생의 AI 요약/관찰/피드백 초안 텍스트가 남아있게
+  // 두지 않는다).
   classesUl.innerHTML = '';
   studentsTbody.innerHTML = '';
   timelineUl.innerHTML = '';
   feedbackUl.innerHTML = '';
+  aiObservationsUl.innerHTML = '';
+  aiSummaryEl.textContent = '';
+  aiSuggestedEl.textContent = '';
 }
 
 function showApprovedError(message: string, retry: () => void): void {
@@ -437,6 +492,10 @@ async function selectClass(classId: string): Promise<void> {
   currentFeedback = [];
   resetFeedbackForm();
   setFeedbackSubState(null);
+  aiSectionEl.hidden = true;
+  currentAIAnalysis = null;
+  aiRetryAction = null;
+  setAISubState(null);
   renderClassList(); // 선택 강조 갱신 — 목록 자체는 그대로 유지된다.
   setApprovedSubState('loading-students');
   // stale-response guard: 이 fetch가 나가 있는 동안 다른 학급이 클릭됐거나
@@ -488,6 +547,13 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
   feedbackSectionEl.hidden = false;
   currentFeedback = [];
   resetFeedbackForm();
+  // AI 분석 영역을 보여주되, 이전 학생의 분석 결과는 즉시 비운다 — 단,
+  // 자동으로 분석을 다시 요청하지는 않는다(0-D11-A 확정 요구사항: "AI는
+  // 명시적 버튼 클릭으로만 호출", 학생 선택만으로 비용이 발생하면 안 됨).
+  aiSectionEl.hidden = false;
+  currentAIAnalysis = null;
+  aiRetryAction = null;
+  setAISubState('idle');
   setApprovedSubState('loading-timeline');
   // Timeline과 완전히 독립적으로 병행 실행한다 — 서로 await하지 않는다
   // (0-D10-E 확정 요구사항 13).
@@ -631,6 +697,91 @@ async function saveFeedback(): Promise<void> {
   }
 }
 
+function showAIError(message: string, retry: () => void): void {
+  aiErrorMsgEl.textContent = message;
+  aiRetryAction = retry;
+  setAISubState('error');
+}
+
+// summary/observation text/suggestedFeedback 모두 textContent로만 쓴다 —
+// AI가 생성한 텍스트라도 예외 없이 XSS 방지 원칙(0-D10-E 확정 요구사항
+// 15, renderFeedbackList()와 동일)을 적용한다. evidence는 서버가 이미
+// 입력에 실제로 존재했던 E1/E2/... 순번만 남기도록 검증했으므로(0-D11-A
+// sanitizeAnalysisResult), 여기서는 그대로 괄호 안에 붙여 보여주기만 한다.
+function renderAIAnalysis(analysis: AIAnalysisResultUI): void {
+  aiSummaryEl.textContent = analysis.summary;
+  aiObservationsUl.innerHTML = '';
+  for (const o of analysis.observations) {
+    const li = document.createElement('li');
+    li.textContent = o.evidence.length > 0 ? `${o.text} (근거: ${o.evidence.join(', ')})` : o.text;
+    aiObservationsUl.appendChild(li);
+  }
+  aiSuggestedEl.textContent = analysis.suggestedFeedback;
+}
+
+// [AI 학습과정 분석] 버튼 클릭으로만 호출된다 — selectStudent()는 이 함수를
+// 부르지 않는다(0-D11-A 확정 비용 통제 요구사항 §12: 자동/백그라운드 호출
+// 금지). 진행 중에는 버튼을 disabled로 막아 같은 학생에 대한 중복 요청을
+// 막는다(0-D11-A 확정 요구사항: "같은 UI 동작에서 병렬 중복 요청 금지").
+async function runAIAnalysis(): Promise<void> {
+  if (!currentAccessToken || !selectedClassId || !selectedStudentId) return;
+  const requestToken = currentAccessToken;
+  const requestClassId = selectedClassId;
+  const requestStudentId = selectedStudentId;
+  // stale-response guard: 요청이 나가 있는 동안 다른 학생/학급으로
+  // 전환되거나 로그아웃/재로그인이 일어나면, 이 응답은 더 이상 화면과
+  // 무관하다 — Timeline/Feedback과 동일한 패턴(0-D10-D/0-D10-E)을 AI
+  // 분석에도 그대로 적용한다. classId A/studentId A/token A로 시작한
+  // 요청은 classId A/studentId B로 전환된 뒤에도, 다른 학급으로 전환된
+  // 뒤에도, 다른 교사 세션으로 바뀐 뒤에도 절대 렌더링되지 않는다.
+  const isStale = () =>
+    requestClassId !== selectedClassId || requestStudentId !== selectedStudentId || requestToken !== currentAccessToken;
+
+  setAISubState('loading');
+  aiAnalyzeBtn.disabled = true;
+  try {
+    const res = await fetch(
+      `/api/teacher/classes/${encodeURIComponent(requestClassId)}/students/${encodeURIComponent(requestStudentId)}/ai-analysis`,
+      { method: 'POST', headers: { Authorization: `Bearer ${requestToken}` } }
+    );
+    if (isStale()) return;
+    if (res.status === 401) {
+      resetDashboardState();
+      setUiState('logged-out');
+      return;
+    }
+    if (!res.ok) {
+      // provider/config/network/malformed 등 모든 실패를 하나의 일반
+      // 메시지로 합친다 — API key/provider 세부 정보는 서버가 애초에
+      // 브라우저로 보내지 않는다(0-D11-A 확정 UX 요구사항).
+      showAIError('AI 분석을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.', () => void runAIAnalysis());
+      return;
+    }
+    const body = (await res.json()) as AIAnalysisResponse;
+    if (isStale()) return;
+    if (body.status !== 'ok') {
+      resetDashboardState();
+      setUiState('not-approved');
+      return;
+    }
+    if (body.analysis === null) {
+      // 정상적인 빈 상태 — 학습 기록이 없어 서버가 OpenAI를 호출하지 않고
+      // 즉시 돌려준 경우다(0-D11-A §8). 오류가 아니다.
+      currentAIAnalysis = null;
+      setAISubState('empty');
+      return;
+    }
+    currentAIAnalysis = body.analysis;
+    renderAIAnalysis(currentAIAnalysis);
+    setAISubState('result');
+  } catch {
+    if (isStale()) return;
+    showAIError('AI 분석을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.', () => void runAIAnalysis());
+  } finally {
+    if (!isStale()) aiAnalyzeBtn.disabled = false;
+  }
+}
+
 async function loadTeacherClasses(accessToken: string): Promise<void> {
   setApprovedSubState('loading-classes');
   // stale-response guard: 이 fetch가 나가 있는 동안 로그아웃하거나 다른
@@ -686,6 +837,31 @@ feedbackCancelBtn.addEventListener('click', () => {
 
 feedbackSaveBtn.addEventListener('click', () => {
   void saveFeedback();
+});
+
+aiAnalyzeBtn.addEventListener('click', () => {
+  void runAIAnalysis();
+});
+
+aiRetryBtn.addEventListener('click', () => {
+  if (aiRetryAction) aiRetryAction();
+});
+
+// [피드백 입력란에 가져오기]: suggestedFeedback을 textarea 값으로만 채운다
+// — 저장 API를 호출하지 않고, Supabase/DB를 전혀 건드리지 않는다(0-D11-A
+// 확정 요구사항: "DB 쓰기 없음, 교사가 반드시 기존 저장 버튼을 직접
+// 눌러야 한다"). 클릭 시점에 이미 다른 피드백을 수정 중이었다면(
+// editingFeedbackId가 설정된 상태) resetFeedbackForm()으로 편집 모드를
+// 먼저 해제한다 — 그렇지 않으면 editingFeedbackId가 남은 채로 저장을
+// 누르는 순간 AI 초안이 PATCH로 기존에 저장된 다른 피드백을 조용히
+// 덮어써버릴 위험이 있다(0-D11-A §20 결정: 항상 새 피드백(POST)으로
+// 저장되도록 편집 모드를 먼저 해제한 뒤 채운다 — 기존 미저장 초안을
+// 덮어쓰는 것은 어차피 textarea 값 교체이므로 별도 확인 없이 진행한다).
+aiCopyBtn.addEventListener('click', () => {
+  if (!currentAIAnalysis) return;
+  resetFeedbackForm();
+  feedbackInput.value = currentAIAnalysis.suggestedFeedback;
+  feedbackInput.focus();
 });
 
 // 같은 access_token으로 중복 호출하지 않는다 — getSession()과

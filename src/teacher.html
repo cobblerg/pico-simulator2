@@ -44,6 +44,9 @@ textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line)
 .t-feedback-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
 .t-feedback-list li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);display:flex;flex-direction:column;gap:4px}
 .t-feedback-list li p{margin:0}
+.ai-subhead{font-size:13px;font-weight:700;margin:8px 0 2px}
+.t-ai-observations{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.t-ai-observations li{font-size:13px}
 </style>
 </head>
 <body>
@@ -85,6 +88,28 @@ textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line)
     <div id="t-timeline-empty" hidden><p class="muted">아직 기록된 학습 활동이 없습니다.</p></div>
     <div id="t-timeline-list" hidden>
       <ul id="t-timeline-ul" class="t-timeline"></ul>
+    </div>
+
+    <div id="t-ai-section" hidden>
+      <h2 class="eyebrow">AI 학습과정 분석</h2>
+      <p class="muted">AI가 생성한 내용은 참고용입니다. 교사가 확인하고 필요하면 수정한 뒤 사용하세요.</p>
+      <button id="t-ai-analyze" class="btn ghost small" type="button">AI 학습과정 분석</button>
+      <div id="t-ai-loading" hidden><p class="msg">AI 분석 중...</p></div>
+      <div id="t-ai-empty" hidden><p class="muted">분석할 학습 기록이 아직 없습니다.</p></div>
+      <div id="t-ai-error" hidden>
+        <p class="err" id="t-ai-error-msg"></p>
+        <button id="t-ai-retry" class="btn ghost small" type="button">다시 시도</button>
+      </div>
+      <div id="t-ai-result" hidden>
+        <p class="eyebrow">AI 분석 (AI 생성 · 참고용, 공식 평가 아님)</p>
+        <h3 class="ai-subhead">학습과정 요약</h3>
+        <p id="t-ai-summary"></p>
+        <h3 class="ai-subhead">관찰 포인트</h3>
+        <ul id="t-ai-observations" class="t-ai-observations"></ul>
+        <h3 class="ai-subhead">AI 피드백 초안</h3>
+        <p id="t-ai-suggested"></p>
+        <button id="t-ai-copy" class="btn small" type="button">피드백 입력란에 가져오기</button>
+      </div>
     </div>
 
     <div id="t-feedback-section" hidden>
