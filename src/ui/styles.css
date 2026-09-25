@@ -336,6 +336,12 @@ td b { font-family: var(--mono); font-weight: 500; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .btn.danger { color: var(--err); }
 
+/* 학생 입장 */
+.se-form { display: flex; flex-direction: column; gap: 10px; }
+.se-field { display: flex; flex-direction: column; gap: 4px; }
+.se-field input { padding: 7px 10px; font-size: 14px; }
+.se-error { color: var(--err); }
+
 /* 교사 설정 */
 .teacher { border-color: var(--pcb); box-shadow: inset 3px 0 0 var(--pcb); }
 .teacher-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }

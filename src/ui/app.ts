@@ -14,6 +14,7 @@ import {
   listProjects, saveProject, deleteProject, makeProject, parseFile, encodeLink, decodeHash,
   ProjectFile, ActivityFile,
 } from './project';
+import { initStudentEntryGate } from './student-entry-ui';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -25,6 +26,10 @@ const store = {
   get(k: string) { try { return localStorage.getItem('picosim:' + k); } catch { return null; } },
   set(k: string, v: string) { try { localStorage.setItem('picosim:' + k, v); } catch {} },
 };
+
+// 0-D8: 기존 초기화 흐름은 전혀 바꾸지 않는다 — dialog는 순수 오버레이이며
+// 이 호출 한 번뿐, 아래 나머지 초기화는 지금과 동일하게 즉시 진행된다.
+initStudentEntryGate();
 
 // ---------- 학습 기록 (대시보드 연동용 훅) ----------
 // 모든 학습 행동을 이벤트로 남긴다. 플랫폼에 붙일 때 이 이벤트를 서버로 보내면 된다.
