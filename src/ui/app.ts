@@ -16,6 +16,7 @@ import {
 } from './project';
 import { initStudentEntryGate } from './student-entry-ui';
 import { isWorkspaceAutosaveEnabled } from './workspace-autosave';
+import { initLearningEventSink } from './learning-event-sink';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -31,12 +32,22 @@ const store = {
 // 0-D8: 기존 초기화 흐름은 전혀 바꾸지 않는다 — dialog는 순수 오버레이이며
 // 이 호출 한 번뿐, 아래 나머지 초기화는 지금과 동일하게 즉시 진행된다.
 initStudentEntryGate();
+// 0-D9-C: learning-event-sink.ts가 이미 존재하는 picosim:event를 구독할
+// 뿐이다 — logEvent()/learningLog/picosim:event의 기존 동작은 아래에서
+// activityId 필드 하나만 추가되는 것 외에는 전혀 바뀌지 않는다.
+initLearningEventSink();
 
 // ---------- 학습 기록 (대시보드 연동용 훅) ----------
 // 모든 학습 행동을 이벤트로 남긴다. 플랫폼에 붙일 때 이 이벤트를 서버로 보내면 된다.
 const learningLog: { t: number; type: string; data: any }[] = [];
 function logEvent(type: string, data: any = {}) {
-  const ev = { t: Date.now(), type, data };
+  // 0-D9-C: activityId를 호출 시점의 현재 mission.id로 함께 실어 보낸다 —
+  // part-add/part-move/part-remove/reset/real-*처럼 data에 mission이 없는
+  // 이벤트도 learning-event-sink.ts가 정확한 activityId를 얻을 수 있게
+  // 하기 위한 최소 변경이다(app.ts 내부 상태에 sink가 직접 결합하지
+  // 않고, 이 필드 하나로만 소통한다). data/learningLog/picosim:event의
+  // 기존 shape·소비 방식은 이 필드가 추가된 것 외에는 그대로다.
+  const ev = { t: Date.now(), type, data, activityId: mission.id };
   learningLog.push(ev);
   window.dispatchEvent(new CustomEvent('picosim:event', { detail: ev }));
 }

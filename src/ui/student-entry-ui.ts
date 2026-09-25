@@ -48,11 +48,20 @@
 // 근거가 되므로 이는 실제 보안 문제로 이어진다. 로그아웃 요청이
 // 실패하면(네트워크 오류/비정상 응답) 자동저장을 다시 켜고 재시도할 수
 // 있게 둔다 — 조용히 무시(catch {})하지 않는다.
+// Stage 0-D9-C: 학습 이벤트 sink(picosim:event → /api/events)도
+// workspace-autosave와 같은 원칙으로 학생 세션에 맞춰 켜고 끈다 — 학생이
+// 입장하기 전(기본값)과 "다시 입장" 시작 이후에는 아무 이벤트도 큐에
+// 쌓이지 않아야 하므로, 이 파일이 그 경계를 결정한다. learning-event-
+// sink.ts를 직접 import하지 않는다 — workspace-autosave.ts와 마찬가지로
+// 작은 중립 모듈(learning-event-lifecycle.ts)을 통해서만 상태를
+// 주고받는다(순환 의존 방지 및 책임 분리 — sink는 "언제 켜졌는지"만
+// 알면 되고, 왜 켜고 끄는지의 정책은 이 파일이 갖는다).
 import { StudentContext } from './student-domain';
 import { toStudentContext } from './student-entry';
 import { store, startWorkspace, saveWorkspace, Workspace } from './project';
 import { MISSIONS } from './data';
 import { disableWorkspaceAutosave, enableWorkspaceAutosave } from './workspace-autosave';
+import { enableLearningEventSink, disableLearningEventSink } from './learning-event-lifecycle';
 
 const SESSION_KEY = 'picosim:student-context';
 
@@ -217,6 +226,7 @@ export function initStudentEntryGate(): void {
 
   if (loadStudentContext()) {
     showExitButton(true);
+    enableLearningEventSink(); // F5 등으로 이미 유효한 세션을 이어받는 경우
   } else {
     openGate();
   }
@@ -279,6 +289,7 @@ export function initStudentEntryGate(): void {
         allowClose = true; // 유일하게 승인된 close 경로
         dialog!.close();
         showExitButton(true);
+        enableLearningEventSink(); // 이제부터 이 학생의 picosim:event를 저장한다
         return;
       }
 
@@ -296,6 +307,13 @@ export function initStudentEntryGate(): void {
       if (exitBtn.disabled) return; // 중복 클릭 방지
       exitBtn.disabled = true;
       exitBtn.textContent = '나가는 중...';
+
+      // 0-D9-C: 학습 이벤트 sink 차단을 다른 어떤 정리 작업보다도 먼저
+      // 한다 — "다시 입장 시작 이후 새 event enqueue 금지"를 가장 확실히
+      // 보장하는 방법은 이 disable을 가장 먼저 실행하는 것뿐이다(그 뒤에
+      // 이어지는 reset/logout이 비동기로 시간이 걸리는 동안에도 이
+      // 순간부터는 어떤 picosim:event도 큐에 들어가지 않는다).
+      disableLearningEventSink();
 
       // 순서: 자동저장 차단 → 작업 상태 초기화 → 서버 세션 로그아웃 →
       // StudentContext 삭제 → reload. 자동저장을 가장 먼저 끄는 이유: reset이
@@ -331,6 +349,7 @@ export function initStudentEntryGate(): void {
 
       if (!logoutOk) {
         enableWorkspaceAutosave(); // 이 페이지가 계속 쓰일 수 있으므로 자동저장을 되돌린다
+        enableLearningEventSink(); // 같은 학생이 계속 쓰므로 이벤트 저장도 되돌린다
         exitBtn.disabled = false;
         exitBtn.textContent = '나가기 실패 · 다시 시도';
         return;
