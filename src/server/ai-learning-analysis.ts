@@ -192,6 +192,81 @@ export function logAIProviderFailure(error: unknown): void {
   console.error('[ai-analysis] provider call failed', { name, status, code, type, requestId, message });
 }
 
+// ---------- 진단용 서버 로그: output_text가 빈 경우(비밀/개인정보 없음) ----------
+// analyzeLearningPattern()은 output_text가 falsy면 Error('empty AI
+// output')를 던지지만(이 동작은 바꾸지 않는다), 그 시점엔 이미
+// AIProviderCall의 반환값(string)만 남아있어 OpenAI가 실제로 어떤 상태로
+// 응답했는지 알 방법이 없다 — 그래서 이 로그는 Response 객체 전체에 접근
+// 가능한 이 파일(실제 OpenAI 호출부)에서만 남길 수 있다.
+//
+// 각 output item에서는 .type 값만 읽는다(예: 'message', 'reasoning') —
+// .content 배열이 있으면 그 안의 각 항목도 .type 값만 읽는다(예:
+// 'output_text', 'refusal') — 실제 텍스트(.text)나 거부 사유(.refusal)
+// 문자열은 절대 읽지 않는다. usage는 숫자 필드만, response.error는 OpenAI
+// 쪽에서 정의한 고정된 code 값만(자유 텍스트인 .message는 제외 —
+// logAIProviderFailure()의 message 필드와 달리 여기서는 redaction 없이
+// 아예 읽지 않는 것으로 안전을 더 단순하게 확보한다). response.id 등
+// 요청/응답 식별자는 화이트리스트에 없으므로 읽지 않는다.
+function summarizeOutputItemType(item: unknown): { type: string | undefined; contentTypes?: string[] } {
+  if (typeof item !== 'object' || item === null) return { type: undefined };
+  const it = item as { type?: unknown; content?: unknown };
+  const type = typeof it.type === 'string' ? it.type : undefined;
+  if (!Array.isArray(it.content)) return { type };
+  const contentTypes = it.content
+    .map((c) => (typeof c === 'object' && c !== null && typeof (c as { type?: unknown }).type === 'string' ? (c as { type: string }).type : undefined))
+    .filter((t): t is string => typeof t === 'string');
+  return { type, contentTypes };
+}
+
+export function logEmptyProviderOutput(response: unknown): void {
+  const r = response as {
+    status?: unknown;
+    incomplete_details?: unknown;
+    output?: unknown;
+    usage?: unknown;
+    error?: unknown;
+  };
+
+  const status = typeof r?.status === 'string' ? r.status : undefined;
+
+  const incompleteDetails = r?.incomplete_details;
+  const incompleteReason =
+    typeof incompleteDetails === 'object' && incompleteDetails !== null && typeof (incompleteDetails as { reason?: unknown }).reason === 'string'
+      ? (incompleteDetails as { reason: string }).reason
+      : undefined;
+
+  const outputIsArray = Array.isArray(r?.output);
+  const outputItems = outputIsArray ? (r!.output as unknown[]) : [];
+  const outputLength = outputIsArray ? outputItems.length : undefined;
+  const outputItemTypes = outputIsArray ? outputItems.map(summarizeOutputItemType) : undefined;
+
+  const usage = r?.usage;
+  const usageSummary =
+    typeof usage === 'object' && usage !== null
+      ? {
+          inputTokens: typeof (usage as { input_tokens?: unknown }).input_tokens === 'number' ? (usage as { input_tokens: number }).input_tokens : undefined,
+          outputTokens: typeof (usage as { output_tokens?: unknown }).output_tokens === 'number' ? (usage as { output_tokens: number }).output_tokens : undefined,
+          totalTokens: typeof (usage as { total_tokens?: unknown }).total_tokens === 'number' ? (usage as { total_tokens: number }).total_tokens : undefined,
+        }
+      : undefined;
+
+  const responseError = r?.error;
+  const errorCode =
+    typeof responseError === 'object' && responseError !== null && typeof (responseError as { code?: unknown }).code === 'string'
+      ? (responseError as { code: string }).code
+      : undefined;
+
+  console.error('[ai-analysis] empty provider output', {
+    status,
+    incompleteReason,
+    outputIsArray,
+    outputLength,
+    outputItemTypes,
+    usage: usageSummary,
+    errorCode,
+  });
+}
+
 // 실제 OpenAI Responses API + Structured Outputs 호출. OPENAI_API_KEY가
 // 없으면 호출 시점에 즉시 실패한다(student-session.ts의 getSecret()과
 // 동일한 fail-closed 패턴 — 모듈 로드 시점이 아니라 실제로 호출될 때
@@ -222,6 +297,12 @@ export function createDefaultAIProvider(): AIProviderCall {
       },
       { timeout: timeoutMs }
     );
+    // output_text가 비어 있을 때만(정상 케이스에서는 절대 로그하지 않는다)
+    // 진단 정보를 남긴다 — analyzeLearningPattern()이 이 문자열을 받아
+    // falsy면 Error('empty AI output')를 던지는 기존 동작은 그대로다.
+    if (!response.output_text) {
+      logEmptyProviderOutput(response);
+    }
     return response.output_text;
   };
 }
