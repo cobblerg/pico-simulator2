@@ -39,6 +39,11 @@ header h1{font-size:20px;margin:0 0 4px}
 .t-timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .t-timeline li{padding:5px 2px;border-bottom:1px solid var(--line);font-size:13px}
 .t-timeline li:last-child{border-bottom:none}
+.row{display:flex;gap:8px;align-items:center}
+textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);resize:vertical}
+.t-feedback-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.t-feedback-list li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);display:flex;flex-direction:column;gap:4px}
+.t-feedback-list li p{margin:0}
 </style>
 </head>
 <body>
@@ -80,6 +85,22 @@ header h1{font-size:20px;margin:0 0 4px}
     <div id="t-timeline-empty" hidden><p class="muted">아직 기록된 학습 활동이 없습니다.</p></div>
     <div id="t-timeline-list" hidden>
       <ul id="t-timeline-ul" class="t-timeline"></ul>
+    </div>
+
+    <div id="t-feedback-section" hidden>
+      <h2 class="eyebrow">교사 피드백</h2>
+      <textarea id="t-feedback-input" rows="3" placeholder="이 학생에게 남길 피드백을 입력하세요"></textarea>
+      <div class="row">
+        <button id="t-feedback-save" class="btn small" type="button">피드백 저장</button>
+        <button id="t-feedback-cancel" class="btn ghost small" type="button" hidden>취소</button>
+      </div>
+      <div id="t-feedback-loading" hidden><p class="msg">피드백을 불러오는 중...</p></div>
+      <div id="t-feedback-empty" hidden><p class="muted">아직 작성된 피드백이 없습니다.</p></div>
+      <div id="t-feedback-error" hidden>
+        <p class="err" id="t-feedback-error-msg"></p>
+        <button id="t-feedback-retry" class="btn ghost small" type="button">다시 시도</button>
+      </div>
+      <ul id="t-feedback-ul" class="t-feedback-list" hidden></ul>
     </div>
 
     <div id="t-error" hidden>

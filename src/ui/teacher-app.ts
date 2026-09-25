@@ -26,10 +26,21 @@
 //
 // Stage 0-D10-D에서 학생 행에 클릭 동작(선택→Timeline 조회)이 추가됐다 —
 // 단, 클릭했을 때 하는 일은 오직 "이 학생의 learning_event 목록을 시간순
-// 문구로 보여준다"뿐이다. 코드 상세 보기/피드백/AI 분석/점수화는 이 파일에
-// 없다(0-D10-D 확정 범위). eventType→한국어 라벨 매핑은 실제로 존재하는
-// 20종만 다루며, "체크포인트 통과"를 "활동 완료"로 해석하는 등 현재 데이터에
-// 없는 의미를 추론하지 않는다(0-D10-D design review §3/§10).
+// 문구로 보여준다"뿐이다. 코드 상세 보기/AI 분석/점수화는 이 파일에 없다.
+// eventType→한국어 라벨 매핑은 실제로 존재하는 20종만 다루며, "체크포인트
+// 통과"를 "활동 완료"로 해석하는 등 현재 데이터에 없는 의미를 추론하지
+// 않는다(0-D10-D design review §3/§10).
+//
+// Stage 0-D10-E에서 학생 전체에 대한 교사 피드백 작성/조회/수정이
+// 추가됐다 — 학생 선택 시 Timeline과 Feedback을 각각 독립된 함수
+// (selectStudent 안의 Timeline fetch, loadFeedback())가 서로의 성공/실패에
+// 관계없이 병행 요청한다(0-D10-E 확정 요구사항 13 — 강결합 금지). Feedback
+// 영역의 표시/숨김(feedbackSectionEl.hidden)은 Timeline의 ApprovedSubState와
+// 완전히 분리된 별도 상태(FeedbackSubState)로 관리한다 — Timeline이
+// error여도 Feedback 영역은 계속 보여야 하기 때문이다. eventId를 이용한
+// 특정 이벤트 피드백, 삭제, 학생 화면 표시는 이번 단계에 없다(0-D10-E 확정
+// 범위 — PRD가 그리는 코드 줄 코멘트/루브릭/템플릿/읽음 여부/알림/AI
+// 초안까지는 LATER).
 //
 // __TEACHER_SUPABASE_URL__/__TEACHER_SUPABASE_ANON_KEY__는 build.mjs가 이
 // 번들에만 esbuild define으로 주입하는 공개 가능한 값이다(anon key는 RLS로
@@ -73,6 +84,17 @@ const timelineUl = el<HTMLUListElement>('t-timeline-ul');
 const errorEl = el<HTMLElement>('t-error');
 const errorMsgEl = el<HTMLElement>('t-error-msg');
 const retryBtn = el<HTMLButtonElement>('t-retry');
+
+const feedbackSectionEl = el<HTMLElement>('t-feedback-section');
+const feedbackInput = el<HTMLTextAreaElement>('t-feedback-input');
+const feedbackSaveBtn = el<HTMLButtonElement>('t-feedback-save');
+const feedbackCancelBtn = el<HTMLButtonElement>('t-feedback-cancel');
+const feedbackLoadingEl = el<HTMLElement>('t-feedback-loading');
+const feedbackEmptyEl = el<HTMLElement>('t-feedback-empty');
+const feedbackErrorEl = el<HTMLElement>('t-feedback-error');
+const feedbackErrorMsgEl = el<HTMLElement>('t-feedback-error-msg');
+const feedbackRetryBtn = el<HTMLButtonElement>('t-feedback-retry');
+const feedbackUl = el<HTMLUListElement>('t-feedback-ul');
 
 type UiState = 'logged-out' | 'checking' | 'approved' | 'not-approved';
 
@@ -143,6 +165,22 @@ function setApprovedSubState(state: ApprovedSubState): void {
   errorEl.hidden = state !== 'error';
 }
 
+// Feedback 영역 전용 하위 상태 — 위 ApprovedSubState와 완전히 독립적인
+// 별도 축이다(0-D10-E 확정 요구사항 "Timeline 오류 때문에 Feedback까지
+// 사라지거나, Feedback 오류 때문에 Timeline까지 사라지는 강결합 상태는
+// 피한다"). feedbackSectionEl 자체의 표시/숨김은 이 상태와 무관하게
+// "학생이 선택됐는가"만으로 별도 관리한다(selectStudent/selectClass/
+// resetDashboardState에서 직접 처리) — 여기서는 그 안의 목록 부분(로딩/
+// 빈 상태/목록/오류)만 다룬다.
+type FeedbackSubState = null | 'loading' | 'empty' | 'list' | 'error';
+
+function setFeedbackSubState(state: FeedbackSubState): void {
+  feedbackLoadingEl.hidden = state !== 'loading';
+  feedbackEmptyEl.hidden = state !== 'empty';
+  feedbackUl.hidden = state !== 'list';
+  feedbackErrorEl.hidden = state !== 'error';
+}
+
 type TeacherMeResponse =
   | { status: 'ok'; teacher: { teacherId: string; displayName: string } }
   | { status: 'not_approved' };
@@ -169,6 +207,14 @@ type TeacherStudentsResponse = { status: 'ok'; students: StudentSummary[] } | { 
 // 가공하지 않는다, 0-D10-D 확정 결정 6은 서버 책임).
 type TimelineEvent = { eventId: string; eventType: string; activityId: string; createdAt: string; payload: unknown };
 type TeacherTimelineResponse = { status: 'ok'; events: TimelineEvent[] } | { status: 'not_approved' };
+
+// teacher-feedback-data.ts의 TeacherFeedbackDTO와 동일한 shape. eventId는
+// 이번 단계에 생성되는 모든 feedback에서 항상 null이지만(0-D10-E 확정
+// 결정 1), 향후 호환성을 위해 타입/응답 모두에 포함돼 있다 — 이 파일은
+// eventId를 읽거나 표시하지 않는다(특정 이벤트 feedback UI는 LATER).
+type TeacherFeedbackItem = { feedbackId: string; content: string; eventId: string | null; createdAt: string; updatedAt: string };
+type TeacherFeedbackListResponse = { status: 'ok'; feedback: TeacherFeedbackItem[] } | { status: 'not_approved' };
+type TeacherFeedbackWriteResponse = { status: 'ok'; feedback: TeacherFeedbackItem } | { status: 'not_approved' };
 
 // 실제로 존재하는 20개 event_type만 다룬다(learning-event-handler.ts의
 // ALLOWED_EVENT_TYPES와 정확히 같은 집합) — 새 event type을 여기서 만들어
@@ -219,21 +265,58 @@ function describeEvent(ev: TimelineEvent): string {
 // 어디에도 저장하지 않는다 — classId를 고르는 것도, 학생을 조회하는 것도
 // 전부 access token만으로 서버가 처리한다.
 let currentAccessToken: string | null = null;
+// access token이 아니라 "실제로 승인된 교사가 누구였는가"를 추적한다 —
+// 같은 교사도 TOKEN_REFRESHED로 access token이 바뀔 수 있으므로, token을
+// identity로 쓰면 정상적인 세션 갱신마다 대시보드가 불필요하게 초기화된다
+// (0-D10-E security fix). checkTeacherStatus()가 /api/teacher/me 성공
+// 응답의 teacher.teacherId와 이 값을 비교해, 실제로 다른 교사로 바뀐
+// 경우에만 resetDashboardState()를 호출한다. resetDashboardState() 자신이
+// 이 값을 null로 되돌린다 — "대시보드를 벗어난 상태"에는 "승인된 교사가
+// 없다"도 함께 포함되기 때문이다.
+let lastApprovedTeacherId: string | null = null;
 let currentClasses: TeacherClassSummary[] = [];
 let selectedClassId: string | null = null;
 let currentStudents: StudentSummary[] = [];
 let selectedStudentId: string | null = null;
 let retryAction: (() => void) | null = null;
 
+let currentFeedback: TeacherFeedbackItem[] = [];
+let editingFeedbackId: string | null = null;
+let feedbackRetryAction: (() => void) | null = null;
+
+function resetFeedbackForm(): void {
+  editingFeedbackId = null;
+  feedbackInput.value = '';
+  feedbackSaveBtn.textContent = '피드백 저장';
+  feedbackSaveBtn.disabled = false;
+  feedbackCancelBtn.hidden = true;
+}
+
 function resetDashboardState(): void {
   currentAccessToken = null;
+  lastApprovedTeacherId = null;
   currentClasses = [];
   selectedClassId = null;
   currentStudents = [];
   selectedStudentId = null;
   retryAction = null;
   timelineStudentEl.textContent = '';
+  feedbackSectionEl.hidden = true;
+  currentFeedback = [];
+  feedbackRetryAction = null;
+  resetFeedbackForm();
+  setFeedbackSubState(null);
   setApprovedSubState(null);
+  // hidden 속성만으로는 "화면에서 사라졌다"일 뿐, 이전 교사의 실제 렌더링된
+  // DOM 노드는 다음 성공적인 렌더링 전까지 그대로 남아있다 — 일반적인 학급/
+  // 학생 전환에서는 hidden만으로 충분했지만(재렌더링 전에는 어차피 사용자가
+  // 볼 수 없으므로), 로그아웃 없이 다른 승인 교사로 바뀌는 경우(0-D10-E
+  // security fix가 다루는 시나리오)에는 애매함을 남기지 않기 위해 네 목록의
+  // 실제 DOM 내용을 여기서 완전히 비운다.
+  classesUl.innerHTML = '';
+  studentsTbody.innerHTML = '';
+  timelineUl.innerHTML = '';
+  feedbackUl.innerHTML = '';
 }
 
 function showApprovedError(message: string, retry: () => void): void {
@@ -292,6 +375,54 @@ function renderTimeline(events: TimelineEvent[]): void {
   }
 }
 
+function showFeedbackError(message: string, retry: () => void): void {
+  feedbackErrorMsgEl.textContent = message;
+  feedbackRetryAction = retry;
+  setFeedbackSubState('error');
+}
+
+// content/작성 시각/수정 시각(수정됐을 때만)/[수정] 버튼을 textContent·
+// createElement로만 구성한다 — content는 교사가 직접 입력한 텍스트라
+// innerHTML에 넣지 않는다(XSS 방지, 0-D10-E 확정 요구사항 15).
+function renderFeedbackList(): void {
+  feedbackUl.innerHTML = '';
+  for (const f of currentFeedback) {
+    const li = document.createElement('li');
+
+    const contentP = document.createElement('p');
+    contentP.textContent = f.content;
+
+    const metaP = document.createElement('p');
+    metaP.className = 'muted';
+    const created = new Date(f.createdAt).toLocaleString('ko-KR', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    metaP.textContent = f.updatedAt !== f.createdAt ? `${created} · 수정됨` : created;
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'btn ghost small';
+    editBtn.textContent = '수정';
+    editBtn.addEventListener('click', () => startEditingFeedback(f));
+
+    li.appendChild(contentP);
+    li.appendChild(metaP);
+    li.appendChild(editBtn);
+    feedbackUl.appendChild(li);
+  }
+}
+
+function startEditingFeedback(f: TeacherFeedbackItem): void {
+  editingFeedbackId = f.feedbackId;
+  feedbackInput.value = f.content;
+  feedbackSaveBtn.textContent = '수정 저장';
+  feedbackCancelBtn.hidden = false;
+  feedbackInput.focus();
+}
+
 async function selectClass(classId: string): Promise<void> {
   if (!currentAccessToken) return;
   const requestToken = currentAccessToken; // 이 요청이 시작된 시점의 세션 — 이후 로그아웃/재로그인과 구분하는 데 쓴다.
@@ -302,6 +433,10 @@ async function selectClass(classId: string): Promise<void> {
   selectedStudentId = null;
   currentStudents = [];
   timelineStudentEl.textContent = '';
+  feedbackSectionEl.hidden = true;
+  currentFeedback = [];
+  resetFeedbackForm();
+  setFeedbackSubState(null);
   renderClassList(); // 선택 강조 갱신 — 목록 자체는 그대로 유지된다.
   setApprovedSubState('loading-students');
   // stale-response guard: 이 fetch가 나가 있는 동안 다른 학급이 클릭됐거나
@@ -350,7 +485,13 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
   renderStudentList(); // 선택 강조 갱신 — 목록 자체는 그대로 유지된다.
   const student = currentStudents.find((s) => s.studentId === studentId);
   timelineStudentEl.textContent = student ? `${student.studentNo}번 ${student.name}` : '';
+  feedbackSectionEl.hidden = false;
+  currentFeedback = [];
+  resetFeedbackForm();
   setApprovedSubState('loading-timeline');
+  // Timeline과 완전히 독립적으로 병행 실행한다 — 서로 await하지 않는다
+  // (0-D10-E 확정 요구사항 13).
+  void loadFeedback(classId, studentId);
   // stale-response guard: 학급 전환(selectedClassId)뿐 아니라 같은 학급
   // 안에서의 다른 학생 전환(selectedStudentId)도 stale 판정에 포함한다 —
   // 학생 A 요청 중 학생 B를 선택했는데 A 응답이 나중에 와도 화면은 B
@@ -383,6 +524,110 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
   } catch {
     if (isStale()) return;
     showApprovedError('학습 기록을 불러오지 못했습니다.', () => void selectStudent(classId, studentId));
+  }
+}
+
+// Timeline과 완전히 독립적으로 동작한다 — selectStudent()가 이 함수와
+// Timeline fetch를 각자 별도의 try/catch·isStale()로 병행 호출할 뿐, 서로
+// await하거나 서로의 성공/실패를 참조하지 않는다(0-D10-E 확정 요구사항
+// 13). Timeline이 실패해도 이 함수의 결과는 그대로 반영되고, 이 함수가
+// 실패해도 Timeline은 그대로 반영된다.
+async function loadFeedback(classId: string, studentId: string): Promise<void> {
+  if (!currentAccessToken) return;
+  const requestToken = currentAccessToken;
+  setFeedbackSubState('loading');
+  const isStale = () => classId !== selectedClassId || studentId !== selectedStudentId || requestToken !== currentAccessToken;
+  try {
+    const res = await fetch(`/api/teacher/classes/${encodeURIComponent(classId)}/students/${encodeURIComponent(studentId)}/feedback`, {
+      headers: { Authorization: `Bearer ${requestToken}` },
+    });
+    if (isStale()) return;
+    if (res.status === 401) {
+      resetDashboardState();
+      setUiState('logged-out');
+      return;
+    }
+    if (!res.ok) {
+      showFeedbackError('피드백을 불러오지 못했습니다.', () => void loadFeedback(classId, studentId));
+      return;
+    }
+    const body = (await res.json()) as TeacherFeedbackListResponse;
+    if (isStale()) return;
+    if (body.status !== 'ok') {
+      resetDashboardState();
+      setUiState('not-approved');
+      return;
+    }
+    currentFeedback = body.feedback;
+    renderFeedbackList();
+    setFeedbackSubState(currentFeedback.length === 0 ? 'empty' : 'list');
+  } catch {
+    if (isStale()) return;
+    showFeedbackError('피드백을 불러오지 못했습니다.', () => void loadFeedback(classId, studentId));
+  }
+}
+
+// 작성(editingFeedbackId===null)과 수정(editingFeedbackId 있음)을 같은
+// textarea/버튼으로 처리한다(0-D10-E 확정 UX — 별도 modal/page 없음).
+// classId/studentId/accessToken/editingFeedbackId를 요청 시작 시점에
+// 캡처해, 응답 처리 직전 현재 선택과 비교한다 — 학생 A에서 저장을
+// 시작했는데 B로 전환한 뒤 A의 응답이 와도 B 화면을 덮지 않는다(0-D10-E
+// 확정 요구사항 14). 서버 저장 자체는 stale 여부와 무관하게 이미
+// 완료되므로, stale이면 UI 반영만 건너뛴다 — 나중에 그 학생을 다시
+// 선택하면 loadFeedback()이 다시 불러와 정상적으로 보인다.
+async function saveFeedback(): Promise<void> {
+  if (!currentAccessToken || !selectedClassId || !selectedStudentId) return;
+  const content = feedbackInput.value.trim();
+  if (content.length === 0) return; // 최종 검증은 서버가 한다 — 여기는 빈 요청을 보내지 않기 위한 최소 확인
+  const requestToken = currentAccessToken;
+  const requestClassId = selectedClassId;
+  const requestStudentId = selectedStudentId;
+  const requestFeedbackId = editingFeedbackId;
+  const isStale = () =>
+    requestClassId !== selectedClassId || requestStudentId !== selectedStudentId || requestToken !== currentAccessToken;
+
+  feedbackSaveBtn.disabled = true;
+  try {
+    const url = requestFeedbackId
+      ? `/api/teacher/classes/${encodeURIComponent(requestClassId)}/students/${encodeURIComponent(requestStudentId)}/feedback/${encodeURIComponent(requestFeedbackId)}`
+      : `/api/teacher/classes/${encodeURIComponent(requestClassId)}/students/${encodeURIComponent(requestStudentId)}/feedback`;
+    const res = await fetch(url, {
+      method: requestFeedbackId ? 'PATCH' : 'POST',
+      headers: { Authorization: `Bearer ${requestToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (isStale()) return;
+    if (res.status === 401) {
+      resetDashboardState();
+      setUiState('logged-out');
+      return;
+    }
+    if (!res.ok) {
+      // 403(다른 교사/다른 enrollment의 feedbackId)도 여기로 온다 — 사유를
+      // 구분해서 보여주지 않는다(서버가 이미 구분 없는 403으로 응답함).
+      showFeedbackError('피드백을 저장하지 못했습니다.', () => void saveFeedback());
+      return;
+    }
+    const body = (await res.json()) as TeacherFeedbackWriteResponse;
+    if (isStale()) return;
+    if (body.status !== 'ok') {
+      resetDashboardState();
+      setUiState('not-approved');
+      return;
+    }
+    if (requestFeedbackId) {
+      currentFeedback = currentFeedback.map((f) => (f.feedbackId === body.feedback.feedbackId ? body.feedback : f));
+    } else {
+      currentFeedback = [...currentFeedback, body.feedback];
+    }
+    renderFeedbackList();
+    setFeedbackSubState(currentFeedback.length === 0 ? 'empty' : 'list');
+    resetFeedbackForm();
+  } catch {
+    if (isStale()) return;
+    showFeedbackError('피드백을 저장하지 못했습니다.', () => void saveFeedback());
+  } finally {
+    if (!isStale()) feedbackSaveBtn.disabled = false;
   }
 }
 
@@ -431,6 +676,18 @@ retryBtn.addEventListener('click', () => {
   if (retryAction) retryAction();
 });
 
+feedbackRetryBtn.addEventListener('click', () => {
+  if (feedbackRetryAction) feedbackRetryAction();
+});
+
+feedbackCancelBtn.addEventListener('click', () => {
+  resetFeedbackForm();
+});
+
+feedbackSaveBtn.addEventListener('click', () => {
+  void saveFeedback();
+});
+
 // 같은 access_token으로 중복 호출하지 않는다 — getSession()과
 // onAuthStateChange(초기 구독 시 INITIAL_SESSION 이벤트 포함)가 페이지
 // 로드 시점에 같은 session을 여러 번 넘겨줄 수 있기 때문이다(0-D10-A 정책
@@ -463,9 +720,27 @@ async function checkTeacherStatus(session: Session): Promise<void> {
     const body = (await res.json()) as TeacherMeResponse;
     if (isStale()) return;
     if (body.status === 'ok') {
+      // 실제로 다른 승인 교사로 바뀐 경우에만 이전 대시보드를 초기화한다 —
+      // lastApprovedTeacherId===null(최초 로그인)이면 초기화할 이전 상태가
+      // 없으므로 건너뛴다. 같은 교사의 teacherId가 그대로면(TOKEN_REFRESHED
+      // 등 정상적인 세션 갱신) 선택된 학급/학생/Timeline/Feedback/작성 중인
+      // 텍스트를 전혀 건드리지 않는다(0-D10-E security fix 요구사항 3/5).
+      const newTeacherId = body.teacher.teacherId;
+      const isFirstApproval = lastApprovedTeacherId === null;
+      const isDifferentTeacher = !isFirstApproval && lastApprovedTeacherId !== newTeacherId;
+      if (isDifferentTeacher) {
+        resetDashboardState();
+      }
+      lastApprovedTeacherId = newTeacherId;
       setUiState('approved', body.teacher.displayName);
       currentAccessToken = session.access_token;
-      void loadTeacherClasses(currentAccessToken);
+      // 같은 교사의 재검증(TOKEN_REFRESHED 등)이라면 학급 목록을 다시
+      // 불러오지 않는다 — 이미 불러온 학급/학생/Timeline/Feedback 화면을
+      // 그대로 유지하기 위함이다(요구사항 5). 최초 로그인이거나 실제로
+      // 다른 교사로 바뀐 경우에만 새로 불러온다.
+      if (isFirstApproval || isDifferentTeacher) {
+        void loadTeacherClasses(currentAccessToken);
+      }
     } else {
       resetDashboardState();
       setUiState('not-approved');
