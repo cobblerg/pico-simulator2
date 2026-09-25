@@ -43,13 +43,13 @@ const MAX_SUMMARY_LENGTH = 200;
 const MAX_OBSERVATIONS = 5;
 const MAX_OBSERVATION_TEXT_LENGTH = 150;
 const MAX_FEEDBACK_LENGTH = 500;
-// Production 진단(logSuspiciousProviderOutput) 결과 800으로는 gpt-5-mini의
-// reasoning 토큰이 예산을 먼저 소진해 Structured Output JSON이 끝까지
-// 생성되지 못하고 잘리는 사례(status:'incomplete',
-// incompleteReason:'max_output_tokens', outputTextFragmentCount:1,
-// invalid JSON)가 실제로 확인됐다 — 다중 output concat(원인 후보 B)은
-// outputTextFragmentCount===1로 배제됨. 원인이 토큰 예산 부족으로
-// 확정되어 2000으로 상향한다(모델/프롬프트/스키마 등 다른 설정은 그대로).
+// Production 진단(2026-09-25) 결과 800으로는 gpt-5-mini의 reasoning
+// 토큰이 예산을 먼저 소진해 Structured Output JSON이 끝까지 생성되지
+// 못하고 잘리는 사례(status:'incomplete',
+// incompleteReason:'max_output_tokens')가 실제로 확인됐다 — 2000으로
+// 상향한 뒤 Production에서 정상 동작 확인됨(모델/프롬프트/스키마 등
+// 다른 설정은 그대로). 원인 조사에 쓰인 임시 상세 진단 로그는 원인 확정
+// 후 제거했다(logAIProviderFailure만 상시 운영 로그로 유지).
 const MAX_OUTPUT_TOKENS = 2000;
 const AI_TIMEOUT_MS = 25_000;
 
@@ -199,191 +199,6 @@ export function logAIProviderFailure(error: unknown): void {
   console.error('[ai-analysis] provider call failed', { name, status, code, type, requestId, message });
 }
 
-// ---------- 진단용 서버 로그: output_text가 빈 경우(비밀/개인정보 없음) ----------
-// analyzeLearningPattern()은 output_text가 falsy면 Error('empty AI
-// output')를 던지지만(이 동작은 바꾸지 않는다), 그 시점엔 이미
-// AIProviderCall의 반환값(string)만 남아있어 OpenAI가 실제로 어떤 상태로
-// 응답했는지 알 방법이 없다 — 그래서 이 로그는 Response 객체 전체에 접근
-// 가능한 이 파일(실제 OpenAI 호출부)에서만 남길 수 있다.
-//
-// 각 output item에서는 .type 값만 읽는다(예: 'message', 'reasoning') —
-// .content 배열이 있으면 그 안의 각 항목도 .type 값만 읽는다(예:
-// 'output_text', 'refusal') — 실제 텍스트(.text)나 거부 사유(.refusal)
-// 문자열은 절대 읽지 않는다. usage는 숫자 필드만, response.error는 OpenAI
-// 쪽에서 정의한 고정된 code 값만(자유 텍스트인 .message는 제외 —
-// logAIProviderFailure()의 message 필드와 달리 여기서는 redaction 없이
-// 아예 읽지 않는 것으로 안전을 더 단순하게 확보한다). response.id 등
-// 요청/응답 식별자는 화이트리스트에 없으므로 읽지 않는다.
-function summarizeOutputItemType(item: unknown): { type: string | undefined; contentTypes?: string[] } {
-  if (typeof item !== 'object' || item === null) return { type: undefined };
-  const it = item as { type?: unknown; content?: unknown };
-  const type = typeof it.type === 'string' ? it.type : undefined;
-  if (!Array.isArray(it.content)) return { type };
-  const contentTypes = it.content
-    .map((c) => (typeof c === 'object' && c !== null && typeof (c as { type?: unknown }).type === 'string' ? (c as { type: string }).type : undefined))
-    .filter((t): t is string => typeof t === 'string');
-  return { type, contentTypes };
-}
-
-export function logEmptyProviderOutput(response: unknown): void {
-  const r = response as {
-    status?: unknown;
-    incomplete_details?: unknown;
-    output?: unknown;
-    usage?: unknown;
-    error?: unknown;
-  };
-
-  const status = typeof r?.status === 'string' ? r.status : undefined;
-
-  const incompleteDetails = r?.incomplete_details;
-  const incompleteReason =
-    typeof incompleteDetails === 'object' && incompleteDetails !== null && typeof (incompleteDetails as { reason?: unknown }).reason === 'string'
-      ? (incompleteDetails as { reason: string }).reason
-      : undefined;
-
-  const outputIsArray = Array.isArray(r?.output);
-  const outputItems = outputIsArray ? (r!.output as unknown[]) : [];
-  const outputLength = outputIsArray ? outputItems.length : undefined;
-  const outputItemTypes = outputIsArray ? outputItems.map(summarizeOutputItemType) : undefined;
-
-  const usage = r?.usage;
-  const usageSummary =
-    typeof usage === 'object' && usage !== null
-      ? {
-          inputTokens: typeof (usage as { input_tokens?: unknown }).input_tokens === 'number' ? (usage as { input_tokens: number }).input_tokens : undefined,
-          outputTokens: typeof (usage as { output_tokens?: unknown }).output_tokens === 'number' ? (usage as { output_tokens: number }).output_tokens : undefined,
-          totalTokens: typeof (usage as { total_tokens?: unknown }).total_tokens === 'number' ? (usage as { total_tokens: number }).total_tokens : undefined,
-        }
-      : undefined;
-
-  const responseError = r?.error;
-  const errorCode =
-    typeof responseError === 'object' && responseError !== null && typeof (responseError as { code?: unknown }).code === 'string'
-      ? (responseError as { code: string }).code
-      : undefined;
-
-  console.error('[ai-analysis] empty provider output', {
-    status,
-    incompleteReason,
-    outputIsArray,
-    outputLength,
-    outputItemTypes,
-    usage: usageSummary,
-    errorCode,
-  });
-}
-
-// ---------- 진단용 서버 로그: output_text가 비어있지 않아도 의심스러운 경우 ----------
-// 조사 결과(2026-09-25 진단 보고) SDK 7.23.0의 Responses.create()는 매
-// 호출마다 response.output 배열을 순회해 type==='message'인 output item의
-// content 중 type==='output_text'인 조각을 "구분자 없이" 이어붙여
-// response.output_text를 만든다(node_modules/openai/lib/ResponsesParser.js의
-// addOutputText 구현 직접 확인). 즉 output_text가 비어있지 않아도:
-//   A. response.status가 'completed'가 아니면(특히 'incomplete' +
-//      incomplete_details.reason==='max_output_tokens') 시각적 출력이
-//      중간에 잘렸을 수 있다 — gpt-5 계열은 max_output_tokens를 reasoning
-//      토큰과 공유한다(SDK 타입 주석에 명시).
-//   B. output_text를 구성한 조각(위 정의의 "output_text 타입 content") 수가
-//      1이 아니면(0개거나 2개 이상) 여러 조각이 구분자 없이 이어붙여져
-//      단일 JSON으로 파싱되지 않을 수 있다.
-// 이 로그는 정상(completed, 조각 1개) 요청에서는 전혀 남지 않는다 — 위 두
-// 조건 중 하나라도 해당할 때만 조건부로 console.error한다.
-//
-// message output item의 phase(예: 'commentary'/'final_answer')는 값 자체만
-// 기록한다 — content의 실제 텍스트(.text)나 거부 사유(.refusal)는 여기서도
-// 절대 읽지 않는다. response.id 등 식별자는 허용 목록에 없으므로 읽지
-// 않는다.
-type SuspiciousOutputItemSummary = {
-  type: string | undefined;
-  phase?: string | null;
-  contentTypes?: string[];
-  outputTextContentCount?: number;
-};
-
-function summarizeMessageOutputItem(item: unknown): SuspiciousOutputItemSummary {
-  if (typeof item !== 'object' || item === null) return { type: undefined };
-  const it = item as { type?: unknown; phase?: unknown; content?: unknown };
-  const type = typeof it.type === 'string' ? it.type : undefined;
-  if (type !== 'message') return { type };
-
-  const phase = typeof it.phase === 'string' ? it.phase : it.phase === null ? null : undefined;
-  const contentTypes = Array.isArray(it.content)
-    ? it.content
-        .map((c) => (typeof c === 'object' && c !== null && typeof (c as { type?: unknown }).type === 'string' ? (c as { type: string }).type : undefined))
-        .filter((t): t is string => typeof t === 'string')
-    : [];
-  const outputTextContentCount = contentTypes.filter((t) => t === 'output_text').length;
-
-  return { type, phase, contentTypes, outputTextContentCount };
-}
-
-export function logSuspiciousProviderOutput(response: unknown): void {
-  const r = response as { status?: unknown; incomplete_details?: unknown; output?: unknown; usage?: unknown };
-
-  const status = typeof r?.status === 'string' ? r.status : undefined;
-
-  const incompleteDetails = r?.incomplete_details;
-  const incompleteReason =
-    typeof incompleteDetails === 'object' && incompleteDetails !== null && typeof (incompleteDetails as { reason?: unknown }).reason === 'string'
-      ? (incompleteDetails as { reason: string }).reason
-      : undefined;
-
-  const outputIsArray = Array.isArray(r?.output);
-  const outputItems = outputIsArray ? (r!.output as unknown[]) : [];
-  const outputLength = outputIsArray ? outputItems.length : undefined;
-  const outputItemSummaries = outputIsArray ? outputItems.map(summarizeMessageOutputItem) : undefined;
-  // addOutputText()와 정확히 같은 방식으로 "output_text 타입 content 조각"
-  // 총 개수를 센다 — message가 아닌 output item은 애초에 요약 단계에서
-  // contentTypes/outputTextContentCount가 없으므로(위 함수) 자동으로
-  // 제외된다.
-  const outputTextFragmentCount = (outputItemSummaries ?? []).reduce((sum, it) => sum + (it.outputTextContentCount ?? 0), 0);
-
-  const usage = r?.usage;
-  const usageSummary =
-    typeof usage === 'object' && usage !== null
-      ? {
-          inputTokens: typeof (usage as { input_tokens?: unknown }).input_tokens === 'number' ? (usage as { input_tokens: number }).input_tokens : undefined,
-          outputTokens: typeof (usage as { output_tokens?: unknown }).output_tokens === 'number' ? (usage as { output_tokens: number }).output_tokens : undefined,
-          totalTokens: typeof (usage as { total_tokens?: unknown }).total_tokens === 'number' ? (usage as { total_tokens: number }).total_tokens : undefined,
-        }
-      : undefined;
-
-  const isSuspicious = status !== 'completed' || outputTextFragmentCount !== 1;
-  if (!isSuspicious) return;
-
-  console.error('[ai-analysis] suspicious provider output', {
-    status,
-    incompleteReason,
-    outputIsArray,
-    outputLength,
-    outputItems: outputItemSummaries,
-    outputTextFragmentCount,
-    usage: usageSummary,
-  });
-}
-
-// ---------- 진단용 서버 로그: JSON.parse 실패 시(비밀/개인정보 없음) ----------
-// analyzeLearningPattern()의 JSON.parse(rawOutput)가 실패했을 때, rawOutput
-// 문자열 자체(또는 그 일부)는 절대 로그하지 않고 구조적 특성만 남긴다 —
-// AI가 생성한 실제 텍스트가 학생 관련 관찰 내용을 요약한 자연어를 포함할
-// 수 있으므로(비록 입력에 PII가 없어도 모델이 무엇을 "출력"했는지는 별개
-// 문제), 원문은 어떤 형태로도 노출하지 않는다.
-function logInvalidJSONOutput(rawOutput: string, parseError: unknown): void {
-  const trimmed = rawOutput.trim();
-  console.error('[ai-analysis] invalid JSON output', {
-    rawOutputType: typeof rawOutput,
-    rawOutputLength: rawOutput.length,
-    trimmedLength: trimmed.length,
-    startsWithBrace: trimmed.startsWith('{'),
-    endsWithBrace: trimmed.endsWith('}'),
-    startsWithBracket: trimmed.startsWith('['),
-    endsWithBracket: trimmed.endsWith(']'),
-    containsCodeFence: rawOutput.includes('```'),
-    parseErrorName: parseError instanceof Error ? parseError.name : typeof parseError,
-  });
-}
-
 // 실제 OpenAI Responses API + Structured Outputs 호출. OPENAI_API_KEY가
 // 없으면 호출 시점에 즉시 실패한다(student-session.ts의 getSecret()과
 // 동일한 fail-closed 패턴 — 모듈 로드 시점이 아니라 실제로 호출될 때
@@ -414,16 +229,6 @@ export function createDefaultAIProvider(): AIProviderCall {
       },
       { timeout: timeoutMs }
     );
-    // output_text가 비어 있을 때만(정상 케이스에서는 절대 로그하지 않는다)
-    // 진단 정보를 남긴다 — analyzeLearningPattern()이 이 문자열을 받아
-    // falsy면 Error('empty AI output')를 던지는 기존 동작은 그대로다.
-    if (!response.output_text) {
-      logEmptyProviderOutput(response);
-    }
-    // status가 'completed'가 아니거나 output_text 조각이 1개가 아닌
-    // "의심스러운" 응답일 때만 추가로 로그한다 — 정상 요청마다는 절대
-    // 로그하지 않는다(logSuspiciousProviderOutput 내부에서 조건 판단).
-    logSuspiciousProviderOutput(response);
     return response.output_text;
   };
 }
@@ -480,8 +285,7 @@ export async function analyzeLearningPattern(aiEvents: AIAnalysisEvent[], provid
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawOutput);
-  } catch (parseError) {
-    logInvalidJSONOutput(rawOutput, parseError);
+  } catch {
     throw new Error('malformed AI output: invalid JSON');
   }
 
