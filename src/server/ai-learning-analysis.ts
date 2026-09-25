@@ -267,6 +267,116 @@ export function logEmptyProviderOutput(response: unknown): void {
   });
 }
 
+// ---------- 진단용 서버 로그: output_text가 비어있지 않아도 의심스러운 경우 ----------
+// 조사 결과(2026-09-25 진단 보고) SDK 7.23.0의 Responses.create()는 매
+// 호출마다 response.output 배열을 순회해 type==='message'인 output item의
+// content 중 type==='output_text'인 조각을 "구분자 없이" 이어붙여
+// response.output_text를 만든다(node_modules/openai/lib/ResponsesParser.js의
+// addOutputText 구현 직접 확인). 즉 output_text가 비어있지 않아도:
+//   A. response.status가 'completed'가 아니면(특히 'incomplete' +
+//      incomplete_details.reason==='max_output_tokens') 시각적 출력이
+//      중간에 잘렸을 수 있다 — gpt-5 계열은 max_output_tokens를 reasoning
+//      토큰과 공유한다(SDK 타입 주석에 명시).
+//   B. output_text를 구성한 조각(위 정의의 "output_text 타입 content") 수가
+//      1이 아니면(0개거나 2개 이상) 여러 조각이 구분자 없이 이어붙여져
+//      단일 JSON으로 파싱되지 않을 수 있다.
+// 이 로그는 정상(completed, 조각 1개) 요청에서는 전혀 남지 않는다 — 위 두
+// 조건 중 하나라도 해당할 때만 조건부로 console.error한다.
+//
+// message output item의 phase(예: 'commentary'/'final_answer')는 값 자체만
+// 기록한다 — content의 실제 텍스트(.text)나 거부 사유(.refusal)는 여기서도
+// 절대 읽지 않는다. response.id 등 식별자는 허용 목록에 없으므로 읽지
+// 않는다.
+type SuspiciousOutputItemSummary = {
+  type: string | undefined;
+  phase?: string | null;
+  contentTypes?: string[];
+  outputTextContentCount?: number;
+};
+
+function summarizeMessageOutputItem(item: unknown): SuspiciousOutputItemSummary {
+  if (typeof item !== 'object' || item === null) return { type: undefined };
+  const it = item as { type?: unknown; phase?: unknown; content?: unknown };
+  const type = typeof it.type === 'string' ? it.type : undefined;
+  if (type !== 'message') return { type };
+
+  const phase = typeof it.phase === 'string' ? it.phase : it.phase === null ? null : undefined;
+  const contentTypes = Array.isArray(it.content)
+    ? it.content
+        .map((c) => (typeof c === 'object' && c !== null && typeof (c as { type?: unknown }).type === 'string' ? (c as { type: string }).type : undefined))
+        .filter((t): t is string => typeof t === 'string')
+    : [];
+  const outputTextContentCount = contentTypes.filter((t) => t === 'output_text').length;
+
+  return { type, phase, contentTypes, outputTextContentCount };
+}
+
+export function logSuspiciousProviderOutput(response: unknown): void {
+  const r = response as { status?: unknown; incomplete_details?: unknown; output?: unknown; usage?: unknown };
+
+  const status = typeof r?.status === 'string' ? r.status : undefined;
+
+  const incompleteDetails = r?.incomplete_details;
+  const incompleteReason =
+    typeof incompleteDetails === 'object' && incompleteDetails !== null && typeof (incompleteDetails as { reason?: unknown }).reason === 'string'
+      ? (incompleteDetails as { reason: string }).reason
+      : undefined;
+
+  const outputIsArray = Array.isArray(r?.output);
+  const outputItems = outputIsArray ? (r!.output as unknown[]) : [];
+  const outputLength = outputIsArray ? outputItems.length : undefined;
+  const outputItemSummaries = outputIsArray ? outputItems.map(summarizeMessageOutputItem) : undefined;
+  // addOutputText()와 정확히 같은 방식으로 "output_text 타입 content 조각"
+  // 총 개수를 센다 — message가 아닌 output item은 애초에 요약 단계에서
+  // contentTypes/outputTextContentCount가 없으므로(위 함수) 자동으로
+  // 제외된다.
+  const outputTextFragmentCount = (outputItemSummaries ?? []).reduce((sum, it) => sum + (it.outputTextContentCount ?? 0), 0);
+
+  const usage = r?.usage;
+  const usageSummary =
+    typeof usage === 'object' && usage !== null
+      ? {
+          inputTokens: typeof (usage as { input_tokens?: unknown }).input_tokens === 'number' ? (usage as { input_tokens: number }).input_tokens : undefined,
+          outputTokens: typeof (usage as { output_tokens?: unknown }).output_tokens === 'number' ? (usage as { output_tokens: number }).output_tokens : undefined,
+          totalTokens: typeof (usage as { total_tokens?: unknown }).total_tokens === 'number' ? (usage as { total_tokens: number }).total_tokens : undefined,
+        }
+      : undefined;
+
+  const isSuspicious = status !== 'completed' || outputTextFragmentCount !== 1;
+  if (!isSuspicious) return;
+
+  console.error('[ai-analysis] suspicious provider output', {
+    status,
+    incompleteReason,
+    outputIsArray,
+    outputLength,
+    outputItems: outputItemSummaries,
+    outputTextFragmentCount,
+    usage: usageSummary,
+  });
+}
+
+// ---------- 진단용 서버 로그: JSON.parse 실패 시(비밀/개인정보 없음) ----------
+// analyzeLearningPattern()의 JSON.parse(rawOutput)가 실패했을 때, rawOutput
+// 문자열 자체(또는 그 일부)는 절대 로그하지 않고 구조적 특성만 남긴다 —
+// AI가 생성한 실제 텍스트가 학생 관련 관찰 내용을 요약한 자연어를 포함할
+// 수 있으므로(비록 입력에 PII가 없어도 모델이 무엇을 "출력"했는지는 별개
+// 문제), 원문은 어떤 형태로도 노출하지 않는다.
+function logInvalidJSONOutput(rawOutput: string, parseError: unknown): void {
+  const trimmed = rawOutput.trim();
+  console.error('[ai-analysis] invalid JSON output', {
+    rawOutputType: typeof rawOutput,
+    rawOutputLength: rawOutput.length,
+    trimmedLength: trimmed.length,
+    startsWithBrace: trimmed.startsWith('{'),
+    endsWithBrace: trimmed.endsWith('}'),
+    startsWithBracket: trimmed.startsWith('['),
+    endsWithBracket: trimmed.endsWith(']'),
+    containsCodeFence: rawOutput.includes('```'),
+    parseErrorName: parseError instanceof Error ? parseError.name : typeof parseError,
+  });
+}
+
 // 실제 OpenAI Responses API + Structured Outputs 호출. OPENAI_API_KEY가
 // 없으면 호출 시점에 즉시 실패한다(student-session.ts의 getSecret()과
 // 동일한 fail-closed 패턴 — 모듈 로드 시점이 아니라 실제로 호출될 때
@@ -303,6 +413,10 @@ export function createDefaultAIProvider(): AIProviderCall {
     if (!response.output_text) {
       logEmptyProviderOutput(response);
     }
+    // status가 'completed'가 아니거나 output_text 조각이 1개가 아닌
+    // "의심스러운" 응답일 때만 추가로 로그한다 — 정상 요청마다는 절대
+    // 로그하지 않는다(logSuspiciousProviderOutput 내부에서 조건 판단).
+    logSuspiciousProviderOutput(response);
     return response.output_text;
   };
 }
@@ -359,7 +473,8 @@ export async function analyzeLearningPattern(aiEvents: AIAnalysisEvent[], provid
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawOutput);
-  } catch {
+  } catch (parseError) {
+    logInvalidJSONOutput(rawOutput, parseError);
     throw new Error('malformed AI output: invalid JSON');
   }
 
