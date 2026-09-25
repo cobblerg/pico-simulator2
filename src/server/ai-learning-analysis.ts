@@ -43,7 +43,14 @@ const MAX_SUMMARY_LENGTH = 200;
 const MAX_OBSERVATIONS = 5;
 const MAX_OBSERVATION_TEXT_LENGTH = 150;
 const MAX_FEEDBACK_LENGTH = 500;
-const MAX_OUTPUT_TOKENS = 800;
+// Production 진단(logSuspiciousProviderOutput) 결과 800으로는 gpt-5-mini의
+// reasoning 토큰이 예산을 먼저 소진해 Structured Output JSON이 끝까지
+// 생성되지 못하고 잘리는 사례(status:'incomplete',
+// incompleteReason:'max_output_tokens', outputTextFragmentCount:1,
+// invalid JSON)가 실제로 확인됐다 — 다중 output concat(원인 후보 B)은
+// outputTextFragmentCount===1로 배제됨. 원인이 토큰 예산 부족으로
+// 확정되어 2000으로 상향한다(모델/프롬프트/스키마 등 다른 설정은 그대로).
+const MAX_OUTPUT_TOKENS = 2000;
 const AI_TIMEOUT_MS = 25_000;
 
 // ---------- AI 입력 이벤트 ----------
