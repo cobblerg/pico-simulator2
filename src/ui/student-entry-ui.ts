@@ -73,6 +73,26 @@ export function initStudentEntryGate(): void {
   const exitBtn = document.getElementById('student-exit') as HTMLButtonElement | null;
   if (!dialog || !form) return;
 
+  // 게이트 불변조건: 유효한 StudentContext가 없는 동안 student-entry-dialog는
+  // 어떤 사용자 취소 동작(Escape 등)으로도 "닫힌 상태"가 될 수 없다.
+  //
+  // 이를 특정 keydown/cancel 이벤트 하나를 막는 방식이 아니라, "dialog가
+  // 열려 있어야 하는 상태 자체"를 지키는 방식으로 보장한다 — allowClose가
+  // true일 때(= accepted 처리에서 우리가 직접 dialog.close()를 호출할
+  // 때)만 닫힘을 허용하고, 그 외의 모든 close는(원인이 Escape든, 연속 Escape
+  // 두 번째 입력이든, 그 밖의 알려지지 않은 브라우저 동작이든) close
+  // 이벤트에서 즉시 감지해 openGate()로 되돌린다. cancel의 preventDefault만
+  // 믿지 않는 이유: 실제 Chrome에서 첫 Escape는 막혔지만 두 번째 연속
+  // Escape에서는 dialog가 실제로 닫히는 현상이 재현됐기 때문이다 — 정확한
+  // 내부 메커니즘을 이 환경에서 재현할 수 없으므로, 원인이 무엇이든 결과
+  // 상태(열려 있어야 함)를 스스로 복구하는 방어로 설계한다.
+  let allowClose = false;
+
+  dialog.addEventListener('cancel', (e) => e.preventDefault());
+  dialog.addEventListener('close', () => {
+    if (!allowClose) openGate(); // 승인되지 않은 close는 즉시 되돌린다
+  });
+
   const classCodeInput = document.getElementById('se-classcode') as HTMLInputElement;
   const studentNoInput = document.getElementById('se-studentno') as HTMLInputElement;
   const nameInput = document.getElementById('se-name') as HTMLInputElement;
@@ -87,7 +107,12 @@ export function initStudentEntryGate(): void {
     errorEl.textContent = '';
     showExitButton(false);
     if (!dialog!.open) dialog!.showModal();
-    classCodeInput.focus();
+    try {
+      classCodeInput.focus();
+    } catch {
+      // 포커스 이동은 부가 기능일 뿐이다 — 실패해도 게이트 자체(모달 표시,
+      // Escape 차단)에는 영향을 주지 않아야 한다.
+    }
   }
 
   if (loadStudentContext()) {
@@ -95,9 +120,6 @@ export function initStudentEntryGate(): void {
   } else {
     openGate();
   }
-
-  // Escape로 dialog를 닫아 게이트를 우회할 수 없게 막는다.
-  dialog.addEventListener('cancel', (e) => e.preventDefault());
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -154,6 +176,7 @@ export function initStudentEntryGate(): void {
         });
         saveStudentContext(ctx);
         form.reset(); // classCode/studentNo/name을 DOM에서 제거
+        allowClose = true; // 유일하게 승인된 close 경로
         dialog!.close();
         showExitButton(true);
         return;
