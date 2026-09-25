@@ -32,7 +32,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { extractBearerToken, resolveTeacherFromAccessToken } from './teacher-session';
 import { assertTeacherOwnsClass, assertStudentEnrolledInClass } from './teacher-authorization';
 import { listRecentLearningEventsForEnrollment } from './teacher-timeline-data';
-import { buildAIInputEvents, analyzeLearningPattern, AIProviderCall, AIAnalysisResult } from './ai-learning-analysis';
+import { buildAIInputEvents, analyzeLearningPattern, logAIProviderFailure, AIProviderCall, AIAnalysisResult } from './ai-learning-analysis';
 
 export type AIAnalysisHandlerResult = { httpStatus: number; body: unknown };
 
@@ -112,11 +112,15 @@ export async function handleAIAnalysisRequest(
   let analysis: AIAnalysisResult;
   try {
     analysis = await analyzeLearningPattern(aiEvents, aiProvider);
-  } catch {
+  } catch (error) {
     // OPENAI_API_KEY 누락, timeout, rate limit, provider 4xx/5xx,
     // malformed structured output, refusal, 예기치 못한 SDK 오류 —
-    // 전부 구분 없이 여기서 흡수한다. API key/provider 세부 정보/원본
-    // 응답/내부 프롬프트/스택 트레이스는 절대 브라우저에 노출하지 않는다.
+    // 전부 구분 없이 브라우저에는 동일한 500으로 흡수한다(응답 body는
+    // 절대 바꾸지 않는다). 진단을 위해 Vercel 서버 로그에만 안전한 필드를
+    // 남긴다 — logAIProviderFailure()는 error 객체 하나만 받으며, classId/
+    // studentId/teacherId/enrollmentId/access token/이벤트 payload는 이
+    // 함수 호출부에 애초에 없으므로 로그로 새어나갈 방법이 없다.
+    logAIProviderFailure(error);
     return { httpStatus: 500, body: { error: 'internal error' } };
   }
 

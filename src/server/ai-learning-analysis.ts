@@ -155,6 +155,43 @@ export type AIProviderCall = (params: {
   timeoutMs: number;
 }) => Promise<string>;
 
+// ---------- 진단용 서버 로그(비밀/개인정보 없음) ----------
+// analyzeLearningPattern()이 실패(provider 호출 실패, malformed/empty
+// 출력 등)했을 때 Vercel 서버 로그에 원인 진단에 필요한 최소 정보만
+// 남긴다. 이 함수는 error 객체 "하나"만 인자로 받는다 — 호출부가
+// classId/studentId/teacherId/enrollmentId/access token/이벤트 payload
+// 등을 애초에 이 함수에 넘기지 않으므로, 그런 값들은 구조적으로 로그에
+// 남을 방법이 없다. error 자체에서도 화이트리스트에 있는 필드(name/
+// status/code/type/requestID)만 개별적으로 읽고, error 전체를
+// JSON.stringify하거나 error.stack/error.cause/error.headers/error.error
+// (OpenAI APIError의 raw 응답 JSON body)는 절대 로그하지 않는다 — 예기치
+// 못한 필드에 민감 정보가 섞여 있을 가능성을 원천 차단한다.
+//
+// message는 예외적으로 로그하되, OpenAI가 "Incorrect API key provided:
+// sk-***..." 형태로 키 일부를 에러 메시지에 그대로 포함시키는 사례가
+// 실제로 있으므로(알려진 OpenAI SDK 동작) sk-로 시작하는 토큰 패턴을
+// 로그 직전에 정규식으로 치환해 제거한다 — 메시지 안에 무엇이 들어있을지
+// 신뢰하지 않는다는 원칙(0-D11-A의 prompt injection 방어와 동일한 태도).
+const SECRET_TOKEN_PATTERN = /sk-[A-Za-z0-9_-]{10,}/g;
+const MAX_LOGGED_MESSAGE_LENGTH = 300;
+
+export function logAIProviderFailure(error: unknown): void {
+  const name = error instanceof Error ? error.name : typeof error;
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message = rawMessage.replace(SECRET_TOKEN_PATTERN, '[REDACTED]').slice(0, MAX_LOGGED_MESSAGE_LENGTH);
+
+  // OpenAI SDK의 APIError(및 하위 클래스)가 가지는 필드 — 존재하고
+  // 타입이 맞을 때만 읽는다(fake provider가 던진 평범한 Error에는 이
+  // 필드들이 없을 수 있고, 그 경우 조용히 undefined로 남는다).
+  const e = error as { status?: unknown; code?: unknown; type?: unknown; requestID?: unknown };
+  const status = typeof e?.status === 'number' ? e.status : undefined;
+  const code = typeof e?.code === 'string' ? e.code : undefined;
+  const type = typeof e?.type === 'string' ? e.type : undefined;
+  const requestId = typeof e?.requestID === 'string' ? e.requestID : undefined;
+
+  console.error('[ai-analysis] provider call failed', { name, status, code, type, requestId, message });
+}
+
 // 실제 OpenAI Responses API + Structured Outputs 호출. OPENAI_API_KEY가
 // 없으면 호출 시점에 즉시 실패한다(student-session.ts의 getSecret()과
 // 동일한 fail-closed 패턴 — 모듈 로드 시점이 아니라 실제로 호출될 때
