@@ -152,3 +152,101 @@ export function normalizeRosterEntry(input: RosterEntryInput): RosterEntryInput 
     name: normalizeText(input.name),
   };
 }
+
+// ---------- validation (Stage 0-D5-C1) ----------
+//
+// validateStudentEntry는 이미 조회된 Student/Enrollment/SchoolClass 데이터와
+// (정규화된) 학생 입력이 서로 일관적인지만 판정하는 순수 함수다. 이 함수는:
+//
+// - DB/repository를 조회하지 않는다 (StudentEntryValidationContext로 조회
+//   결과를 미리 받는다 — repository나 DB 개념은 이 타입에 넣지 않는다).
+// - Student/Enrollment를 생성하지 않는다.
+// - 아무 것도 저장하지 않는다.
+// - input/context를 mutate하지 않는다.
+//
+// normalizeStudentEntryInput()을 내부에서 다시 호출하지 않는다 — normalize와
+// validate의 책임을 분리하기 위함이다. 향후 orchestration layer가
+// normalize → lookup → validate 순서로 조합할 것을 전제한다. 따라서 trim되지
+// 않은 raw 입력을 그대로 넣으면 저장된 값과 형식이 달라 의도치 않게 실패할
+// 수 있다 — 이는 의도된 계약이다.
+//
+// 판정 우선순위(먼저 만족하는 조건이 결과를 결정하며, 비정상적인 context
+// 조합에서도 이 순서는 deterministic하다):
+//   1. schoolClass 없음 → class-not-found
+//   2. input.classCode !== schoolClass.classCode → class-not-found
+//      (정상 흐름이라면 classCode로 SchoolClass를 조회했으므로 항상 같아야
+//      한다. 다르면 잘못된 context가 전달된 것이며, 사용자 관점에서는 입력한
+//      classCode에 해당하는 유효한 Class가 확인되지 않은 것과 동일하다.
+//      내부 ID 정보를 노출하지 않기 위해 data-integrity-error가 아닌
+//      class-not-found로 취급한다 — schoolClass 자체가 없는 경우(1번)와
+//      같은 이유이므로 그 바로 다음 우선순위로 둔다.)
+//   3. enrollment 없음 → enrollment-not-found
+//   4. student 없음 → data-integrity-error (조회 결과 자체가 모순)
+//   5. enrollment.classId/studentId가 schoolClass/student와 다름
+//      → data-integrity-error
+//   6. input.studentNo !== enrollment.studentNo → data-integrity-error
+//      (정상 orchestration이라면 (classId, studentNo)로 enrollment를
+//      조회했으므로 항상 같아야 한다. 잘못된 enrollment가 전달되어 다른
+//      학생을 accepted시키는 것을 막기 위한 방어적 검사다. fuzzy matching이나
+//      숫자 변환은 하지 않는다.)
+//   7. input.name !== student.name (strict equality) → name-mismatch
+//   8. 위 전부 통과 → accepted
+//
+// 이 함수가 검사하지 않는 것: input.classCode/studentNo/name이 빈 문자열인지
+// 여부. "조회된 domain data와 입력 identity가 서로 일관적인가"만 판정하며,
+// form validation은 향후 orchestration layer의 책임으로 남긴다.
+//
+// name-mismatch/data-integrity-error 결과에는 실제 name/studentNo/classCode
+// 값을 담지 않는다 — StudentEntryResult 타입 자체가 이를 강제한다(위 참고).
+
+export type StudentEntryValidationContext = {
+  schoolClass?: SchoolClass;
+  enrollment?: Enrollment;
+  student?: Student;
+};
+
+export function validateStudentEntry(
+  input: StudentEntryInput,
+  context: StudentEntryValidationContext
+): StudentEntryResult {
+  const { schoolClass, enrollment, student } = context;
+
+  if (schoolClass === undefined) {
+    return { status: 'class-not-found' };
+  }
+
+  if (input.classCode !== schoolClass.classCode) {
+    return { status: 'class-not-found' };
+  }
+
+  if (enrollment === undefined) {
+    return { status: 'enrollment-not-found', classId: schoolClass.classId };
+  }
+
+  if (student === undefined) {
+    return { status: 'data-integrity-error', enrollmentId: enrollment.enrollmentId };
+  }
+
+  if (enrollment.classId !== schoolClass.classId || enrollment.studentId !== student.studentId) {
+    return { status: 'data-integrity-error', enrollmentId: enrollment.enrollmentId };
+  }
+
+  if (input.studentNo !== enrollment.studentNo) {
+    return { status: 'data-integrity-error', enrollmentId: enrollment.enrollmentId };
+  }
+
+  if (input.name !== student.name) {
+    return {
+      status: 'name-mismatch',
+      enrollmentId: enrollment.enrollmentId,
+      classId: schoolClass.classId,
+    };
+  }
+
+  return {
+    status: 'accepted',
+    studentId: student.studentId,
+    enrollmentId: enrollment.enrollmentId,
+    classId: schoolClass.classId,
+  };
+}
