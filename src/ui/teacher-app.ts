@@ -22,8 +22,14 @@
 // 'approved' 상태 "안에서"만 동작하는 별도의 하위 상태(ApprovedSubState)를
 // 추가하는 방식으로 확장했다. teacherId는 이 파일 어디에도 없다 — 서버가
 // access token으로부터 스스로 확인하므로 브라우저가 teacherId를 알거나
-// 전송할 필요가 구조적으로 없다. 학생 행에는 클릭 동작을 만들지 않는다
-// (학생 상세/timeline/feedback은 0-D10-D 이후 범위).
+// 전송할 필요가 구조적으로 없다.
+//
+// Stage 0-D10-D에서 학생 행에 클릭 동작(선택→Timeline 조회)이 추가됐다 —
+// 단, 클릭했을 때 하는 일은 오직 "이 학생의 learning_event 목록을 시간순
+// 문구로 보여준다"뿐이다. 코드 상세 보기/피드백/AI 분석/점수화는 이 파일에
+// 없다(0-D10-D 확정 범위). eventType→한국어 라벨 매핑은 실제로 존재하는
+// 20종만 다루며, "체크포인트 통과"를 "활동 완료"로 해석하는 등 현재 데이터에
+// 없는 의미를 추론하지 않는다(0-D10-D design review §3/§10).
 //
 // __TEACHER_SUPABASE_URL__/__TEACHER_SUPABASE_ANON_KEY__는 build.mjs가 이
 // 번들에만 esbuild define으로 주입하는 공개 가능한 값이다(anon key는 RLS로
@@ -59,6 +65,11 @@ const studentsLoadingEl = el<HTMLElement>('t-students-loading');
 const studentsEmptyEl = el<HTMLElement>('t-students-empty');
 const studentsListEl = el<HTMLElement>('t-students-list');
 const studentsTbody = el<HTMLTableSectionElement>('t-students-tbody');
+const timelineStudentEl = el<HTMLElement>('t-timeline-student');
+const timelineLoadingEl = el<HTMLElement>('t-timeline-loading');
+const timelineEmptyEl = el<HTMLElement>('t-timeline-empty');
+const timelineListEl = el<HTMLElement>('t-timeline-list');
+const timelineUl = el<HTMLUListElement>('t-timeline-ul');
 const errorEl = el<HTMLElement>('t-error');
 const errorMsgEl = el<HTMLElement>('t-error-msg');
 const retryBtn = el<HTMLButtonElement>('t-retry');
@@ -76,10 +87,15 @@ function setUiState(state: UiState, displayName?: string): void {
 
 // 'approved' 상태 "안에서"만 의미가 있는 하위 상태 — 위 UiState와는 별개
 // 축이다(0-D10-C design review §5 제안 그대로: 별도 화면 전환 없이 같은
-// #t-approved 카드 안에서 학급 목록 → 학생 목록을 갱신한다).
-// classesListEl은 'classes' 이후 모든 하위 상태(loading-students/students/
-// no-students)에서도 계속 보여야 한다 — 교사가 다른 학급을 다시 클릭할 수
-// 있어야 하기 때문이다(같은 화면 안에서의 학급 전환).
+// #t-approved 카드 안에서 학급 목록 → 학생 목록 → Timeline을 갱신한다).
+// classesListEl은 'classes' 이후 모든 하위 상태(학생/Timeline 관련 전부)
+// 에서도 계속 보여야 한다 — 교사가 다른 학급을 다시 클릭할 수 있어야
+// 하기 때문이다. studentsListEl도 마찬가지로 Timeline 관련 상태에서 계속
+// 보여야 한다 — "학생 목록은 계속 화면에 남겨두어 다른 학생을 바로 선택할
+// 수 있게 한다"(0-D10-D 확정 UI 요구사항). 'error'도 두 목록이 이미 로드돼
+// 있었다면 계속 보이게 포함한다 — Timeline/학생 목록 조회 실패가 이미 불러온
+// 상위 목록까지 숨겨버리면 교사가 다시 학급을 클릭해야 하는 불필요한 왕복이
+// 생기기 때문이다.
 type ApprovedSubState =
   | null
   | 'loading-classes'
@@ -88,20 +104,42 @@ type ApprovedSubState =
   | 'loading-students'
   | 'students'
   | 'no-students'
+  | 'loading-timeline'
+  | 'timeline'
+  | 'empty-timeline'
   | 'error';
+
+const CLASSES_VISIBLE_STATES = new Set<ApprovedSubState>([
+  'classes',
+  'loading-students',
+  'students',
+  'no-students',
+  'loading-timeline',
+  'timeline',
+  'empty-timeline',
+  'error',
+]);
+const STUDENTS_VISIBLE_STATES = new Set<ApprovedSubState>([
+  'students',
+  'loading-timeline',
+  'timeline',
+  'empty-timeline',
+  'error',
+]);
 
 function setApprovedSubState(state: ApprovedSubState): void {
   classesLoadingEl.hidden = state !== 'loading-classes';
   classesEmptyEl.hidden = state !== 'no-classes';
-  classesListEl.hidden = !(
-    state === 'classes' ||
-    state === 'loading-students' ||
-    state === 'students' ||
-    state === 'no-students'
-  );
+  classesListEl.hidden = !CLASSES_VISIBLE_STATES.has(state);
+
   studentsLoadingEl.hidden = state !== 'loading-students';
   studentsEmptyEl.hidden = state !== 'no-students';
-  studentsListEl.hidden = state !== 'students';
+  studentsListEl.hidden = !STUDENTS_VISIBLE_STATES.has(state);
+
+  timelineLoadingEl.hidden = state !== 'loading-timeline';
+  timelineEmptyEl.hidden = state !== 'empty-timeline';
+  timelineListEl.hidden = state !== 'timeline';
+
   errorEl.hidden = state !== 'error';
 }
 
@@ -126,6 +164,56 @@ type StudentSummary = { enrollmentId: string; studentId: string; studentNo: stri
 // review에서 발견됨, 0-D10-C fix).
 type TeacherStudentsResponse = { status: 'ok'; students: StudentSummary[] } | { status: 'not_approved' };
 
+// teacher-timeline-data.ts의 TeacherTimelineEvent와 동일한 shape — 서버가
+// 이미 최소화한 payload를 그대로 받는다(이 파일에서 추가로 payload를
+// 가공하지 않는다, 0-D10-D 확정 결정 6은 서버 책임).
+type TimelineEvent = { eventId: string; eventType: string; activityId: string; createdAt: string; payload: unknown };
+type TeacherTimelineResponse = { status: 'ok'; events: TimelineEvent[] } | { status: 'not_approved' };
+
+// 실제로 존재하는 20개 event_type만 다룬다(learning-event-handler.ts의
+// ALLOWED_EVENT_TYPES와 정확히 같은 집합) — 새 event type을 여기서 만들어
+// 내지 않는다. 매핑에 없는 값이 방어적으로 와도 raw event_type을 그대로
+// 보여준다(폴백일 뿐, 정상 경로에서는 발생하지 않는다).
+const EVENT_LABELS: Record<string, string> = {
+  'mission-open': '미션 열기',
+  'activity-open': '활동 열기',
+  paste: '코드 붙여넣기',
+  'part-add': '부품 추가',
+  'part-move': '부품 이동',
+  'part-remove': '부품 제거',
+  run: '코드 실행',
+  'run-end': '실행 완료',
+  error: '오류 발생',
+  stop: '실행 정지',
+  checkpoint: '체크포인트',
+  reset: '리셋',
+  'project-save': '프로젝트 저장',
+  'project-open': '프로젝트 불러오기',
+  'project-share': '공유 링크 복사',
+  'project-restart': '처음 상태로 되돌리기',
+  'real-connect': '실물 연결',
+  'real-run': '실물에서 실행',
+  'real-run-end': '실물 실행 종료',
+  'real-save': '실물에 저장',
+};
+
+// checkpoint는 ok에 따라 "통과"/"미통과"만 덧붙인다 — ok:true를 "활동
+// 완료"라고 표현하지 않는다(0-D10-D design review §3에서 확인한 대로,
+// 학생이 통과 이후에도 계속 시도할 수 있어 "완료"는 현재 데이터로 확정할
+// 수 없는 의미이기 때문). error는 payload.type(예외 클래스명)이 있으면
+// 덧붙여 어떤 오류였는지 바로 알 수 있게 한다.
+function describeEvent(ev: TimelineEvent): string {
+  const label = EVENT_LABELS[ev.eventType] ?? ev.eventType;
+  const payload = (ev.payload && typeof ev.payload === 'object' ? ev.payload : {}) as Record<string, unknown>;
+  if (ev.eventType === 'checkpoint') {
+    return `${label} · ${payload.ok ? '통과' : '미통과'}`;
+  }
+  if (ev.eventType === 'error' && typeof payload.type === 'string' && payload.type.length > 0) {
+    return `${label} · ${payload.type}`;
+  }
+  return label;
+}
+
 // 현재 로그인한 교사의 access token — /api/teacher/classes 응답을 받은
 // 직후부터 학급 클릭(selectClass) 시점까지 재사용한다. teacherId는 여기
 // 어디에도 저장하지 않는다 — classId를 고르는 것도, 학생을 조회하는 것도
@@ -133,13 +221,18 @@ type TeacherStudentsResponse = { status: 'ok'; students: StudentSummary[] } | { 
 let currentAccessToken: string | null = null;
 let currentClasses: TeacherClassSummary[] = [];
 let selectedClassId: string | null = null;
+let currentStudents: StudentSummary[] = [];
+let selectedStudentId: string | null = null;
 let retryAction: (() => void) | null = null;
 
 function resetDashboardState(): void {
   currentAccessToken = null;
   currentClasses = [];
   selectedClassId = null;
+  currentStudents = [];
+  selectedStudentId = null;
   retryAction = null;
+  timelineStudentEl.textContent = '';
   setApprovedSubState(null);
 }
 
@@ -162,17 +255,40 @@ function renderClassList(): void {
   }
 }
 
-function renderStudentList(students: StudentSummary[]): void {
+// currentStudents(모듈 상태)를 그린다 — 학생을 선택해도 목록 자체는 다시
+// fetch하지 않고 이 함수로 강조(.sel)만 갱신한다(renderClassList()가 학급
+// 선택 강조를 갱신하는 것과 동일한 패턴). 행에는 클릭 동작이 있다 — 클릭하면
+// selectStudent()를 호출해 Timeline을 불러온다(0-D10-D). 학생 상세/코드
+// 열람 등 다른 동작은 여기 없다.
+function renderStudentList(): void {
   studentsTbody.innerHTML = '';
-  for (const s of students) {
+  for (const s of currentStudents) {
     const tr = document.createElement('tr');
+    if (s.studentId === selectedStudentId) tr.classList.add('sel');
     const tdNo = document.createElement('td');
     tdNo.textContent = s.studentNo;
     const tdName = document.createElement('td');
     tdName.textContent = s.name;
     tr.appendChild(tdNo);
     tr.appendChild(tdName);
+    tr.addEventListener('click', () => {
+      if (!selectedClassId) return;
+      void selectStudent(selectedClassId, s.studentId);
+    });
     studentsTbody.appendChild(tr);
+  }
+}
+
+// Timeline 이벤트를 시간순(오래된 것 → 최신, 서버가 이미 이 순서로 정렬해
+// 응답함)으로 나열한다. 이벤트 항목 자체에는 클릭 동작을 두지 않는다(코드
+// 상세 보기는 0-D10-D 범위 밖).
+function renderTimeline(events: TimelineEvent[]): void {
+  timelineUl.innerHTML = '';
+  for (const ev of events) {
+    const li = document.createElement('li');
+    const time = new Date(ev.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+    li.textContent = `${time} · [${ev.activityId}] ${describeEvent(ev)}`;
+    timelineUl.appendChild(li);
   }
 }
 
@@ -180,6 +296,12 @@ async function selectClass(classId: string): Promise<void> {
   if (!currentAccessToken) return;
   const requestToken = currentAccessToken; // 이 요청이 시작된 시점의 세션 — 이후 로그아웃/재로그인과 구분하는 데 쓴다.
   selectedClassId = classId;
+  // 학급이 바뀌면 이전에 선택했던 학생/Timeline은 더 이상 유효하지 않다 —
+  // 0-D10-D 확정 UI 요구사항("학급 변경 시 selectedStudentId와 Timeline
+  // state를 초기화한다").
+  selectedStudentId = null;
+  currentStudents = [];
+  timelineStudentEl.textContent = '';
   renderClassList(); // 선택 강조 갱신 — 목록 자체는 그대로 유지된다.
   setApprovedSubState('loading-students');
   // stale-response guard: 이 fetch가 나가 있는 동안 다른 학급이 클릭됐거나
@@ -212,11 +334,55 @@ async function selectClass(classId: string): Promise<void> {
       setUiState('not-approved');
       return;
     }
-    renderStudentList(body.students);
-    setApprovedSubState(body.students.length === 0 ? 'no-students' : 'students');
+    currentStudents = body.students;
+    renderStudentList();
+    setApprovedSubState(currentStudents.length === 0 ? 'no-students' : 'students');
   } catch {
     if (isStale()) return;
     showApprovedError('학생 목록을 불러오지 못했습니다.', () => void selectClass(classId));
+  }
+}
+
+async function selectStudent(classId: string, studentId: string): Promise<void> {
+  if (!currentAccessToken) return;
+  const requestToken = currentAccessToken;
+  selectedStudentId = studentId;
+  renderStudentList(); // 선택 강조 갱신 — 목록 자체는 그대로 유지된다.
+  const student = currentStudents.find((s) => s.studentId === studentId);
+  timelineStudentEl.textContent = student ? `${student.studentNo}번 ${student.name}` : '';
+  setApprovedSubState('loading-timeline');
+  // stale-response guard: 학급 전환(selectedClassId)뿐 아니라 같은 학급
+  // 안에서의 다른 학생 전환(selectedStudentId)도 stale 판정에 포함한다 —
+  // 학생 A 요청 중 학생 B를 선택했는데 A 응답이 나중에 와도 화면은 B
+  // Timeline을 유지해야 한다(0-D10-D 확정 요구사항, 0-D10-C fix의
+  // isStale() 패턴을 그대로 확장).
+  const isStale = () => classId !== selectedClassId || studentId !== selectedStudentId || requestToken !== currentAccessToken;
+  try {
+    const res = await fetch(`/api/teacher/classes/${encodeURIComponent(classId)}/students/${encodeURIComponent(studentId)}/events`, {
+      headers: { Authorization: `Bearer ${requestToken}` },
+    });
+    if (isStale()) return;
+    if (res.status === 401) {
+      resetDashboardState();
+      setUiState('logged-out');
+      return;
+    }
+    if (!res.ok) {
+      showApprovedError('학습 기록을 불러오지 못했습니다.', () => void selectStudent(classId, studentId));
+      return;
+    }
+    const body = (await res.json()) as TeacherTimelineResponse;
+    if (isStale()) return;
+    if (body.status !== 'ok') {
+      resetDashboardState();
+      setUiState('not-approved');
+      return;
+    }
+    renderTimeline(body.events);
+    setApprovedSubState(body.events.length === 0 ? 'empty-timeline' : 'timeline');
+  } catch {
+    if (isStale()) return;
+    showApprovedError('학습 기록을 불러오지 못했습니다.', () => void selectStudent(classId, studentId));
   }
 }
 

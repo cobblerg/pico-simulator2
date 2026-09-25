@@ -91,3 +91,40 @@ export async function listTeacherClasses(
     classCode: row.class_code,
   }));
 }
+
+type EnrollmentIdRow = { enrollment_id: string };
+
+// 학생 소속 authorization (Stage 0-D10-D). "이 교사가 이 학급을 담당한다"는
+// assertTeacherOwnsClass()의 확인만으로는 "이 studentId가 그 학급 소속이다"를
+// 보장하지 못한다 — 교사 A가 실제로 담당하는 학급 A의 classId와, 실제로는
+// 학급 B 소속인 학생 X의 studentId를 조합해 요청하는 공격을 막으려면 반드시
+// 이 함수로 (classId, studentId) 조합 자체가 enrollment에 실존하는지 별도로
+// 재확인해야 한다(0-D10-D design review §6).
+//
+// boolean이 아니라 검증된 enrollmentId(string | null)를 반환한다 — 호출부가
+// 이후 learning_event를 조회할 때 URL의 studentId/classId를 다시 조회
+// 조건으로 쓰지 않고, 여기서 재확인해 얻은 enrollmentId만 신뢰하도록
+// 강제하기 위함이다(0-D9-B verifyEnrollmentConsistency와 동일한 "재조회한
+// 값만 신뢰" 원칙). 0건(소속 아님/존재하지 않는 studentId) 또는 2개 이상
+// (student_id가 그 class_id 안에서 유일해야 하는데 비정상적으로 여러 건이
+// 나오는 경우, 정상적으로는 unique(class_id, student_no) 제약상 발생하지
+// 않지만 방어적으로 처리) 모두 null을 반환한다 — 두 실패 사유를 이 함수
+// 수준에서부터 구분하지 않는다(호출부가 존재 여부를 노출하는 응답을 만들
+// 방법 자체가 없다).
+export async function assertStudentEnrolledInClass(
+  client: SupabaseClient,
+  classId: string,
+  studentId: string
+): Promise<string | null> {
+  const { data, error } = await client
+    .from('enrollment')
+    .select('enrollment_id')
+    .eq('class_id', classId)
+    .eq('student_id', studentId)
+    .limit(2);
+
+  if (error) throw error;
+  if (data.length !== 1) return null;
+
+  return (data[0] as EnrollmentIdRow).enrollment_id;
+}
