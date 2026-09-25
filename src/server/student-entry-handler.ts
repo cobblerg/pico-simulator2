@@ -19,6 +19,7 @@
 import { StudentEntryInput, StudentEntryResult } from '../ui/student-domain';
 import { StudentDataSource } from '../ui/student-data';
 import { enterStudent } from '../ui/student-entry';
+import { createStudentSession, serializeStudentSessionCookie } from './student-session';
 
 export type PublicStudentEntryResponse =
   | { status: 'accepted'; studentId: string; enrollmentId: string; classId: string }
@@ -36,7 +37,7 @@ function toPublicResponse(result: StudentEntryResult): PublicStudentEntryRespons
   return { status: 'rejected' };
 }
 
-export type HandlerResult = { httpStatus: number; body: unknown };
+export type HandlerResult = { httpStatus: number; body: unknown; headers?: Record<string, string> };
 
 function isString(v: unknown): v is string {
   return typeof v === 'string';
@@ -78,12 +79,30 @@ export async function handleStudentEntryRequest(
     // trim/NFC 정규화는 enterStudent() 내부(normalizeStudentEntryInput)가
     // 그대로 수행한다 — 여기서 다시 하지 않는다.
     const result = await enterStudent(input, dataSource);
+
+    if (result.status === 'accepted') {
+      // 서버 authorization 근거인 student_session은 오직 이 accepted
+      // 분기에서만 발급한다. createStudentSession()이 던지는 예외(예:
+      // STUDENT_SESSION_SECRET 미설정)는 아래 catch로 흘러가 500이 되며,
+      // 이 경우 "accepted인데 쿠키가 없는" 상태로 응답하지 않는다 — 즉
+      // 설정 오류는 절대 조용히 생략되지 않는다.
+      const cookie = serializeStudentSessionCookie(
+        createStudentSession({
+          studentId: result.studentId,
+          enrollmentId: result.enrollmentId,
+          classId: result.classId,
+        })
+      );
+      return { httpStatus: 200, body: toPublicResponse(result), headers: { 'Set-Cookie': cookie } };
+    }
+
     return { httpStatus: 200, body: toPublicResponse(result) };
   } catch {
-    // infrastructure failure(DB 오류/네트워크 등) — 에러 메시지, stack trace,
-    // Supabase 세부정보를 클라이언트에 절대 노출하지 않는다. 여기서도
-    // console.error 등으로 로그를 남기지 않는다 — 일부 DB 에러 메시지에는
-    // 입력값(studentNo 등)이 그대로 포함될 수 있기 때문이다.
+    // infrastructure failure(DB 오류/네트워크/세션 설정 오류 등) — 에러
+    // 메시지, stack trace, Supabase/세션 세부정보를 클라이언트에 절대
+    // 노출하지 않는다. 여기서도 console.error 등으로 로그를 남기지 않는다
+    // — 일부 DB 에러 메시지에는 입력값(studentNo 등)이 그대로 포함될 수
+    // 있기 때문이다.
     return { httpStatus: 500, body: { error: 'internal error' } };
   }
 }

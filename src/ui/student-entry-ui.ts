@@ -40,11 +40,19 @@
 // 않는 이유는 app.ts가 이미 이 파일을 import하고 있어(초기화 훅) 순환
 // 의존이 생기기 때문이다 — 대신 두 파일이 공통으로 참조하는 작은 중립
 // 모듈(workspace-autosave.ts)을 통해서만 상태를 주고받는다.
+// Stage 0-D9-A1: "다시 입장"은 이제 서버의 student_session(HttpOnly 쿠키)도
+// 함께 끊어야 한다 — /api/student-session/logout 호출이 성공적으로
+// 끝나기 전에는 StudentContext를 지우거나 reload하지 않는다. 그렇지
+// 않으면 이전 학생의 HttpOnly 쿠키가 브라우저에 남은 채로 다음 학생이
+// 시뮬레이터를 쓰게 되고, 그 쿠키가 향후 학습 Event API의 authorization
+// 근거가 되므로 이는 실제 보안 문제로 이어진다. 로그아웃 요청이
+// 실패하면(네트워크 오류/비정상 응답) 자동저장을 다시 켜고 재시도할 수
+// 있게 둔다 — 조용히 무시(catch {})하지 않는다.
 import { StudentContext } from './student-domain';
 import { toStudentContext } from './student-entry';
 import { store, startWorkspace, saveWorkspace, Workspace } from './project';
 import { MISSIONS } from './data';
-import { disableWorkspaceAutosave } from './workspace-autosave';
+import { disableWorkspaceAutosave, enableWorkspaceAutosave } from './workspace-autosave';
 
 const SESSION_KEY = 'picosim:student-context';
 
@@ -284,23 +292,50 @@ export function initStudentEntryGate(): void {
   });
 
   if (exitBtn) {
-    exitBtn.addEventListener('click', () => {
-      // 순서: 자동저장 차단 → 작업 상태 초기화 → StudentContext 삭제 →
-      // reload. 자동저장을 가장 먼저 끄는 이유: reset이 localStorage를
-      // 깨끗하게 만든 뒤에도, 이미 예약돼 있던 디바운스 타이머나 pagehide가
-      // reload가 실제로 페이지를 떠나기 전(같은 JS 컨텍스트가 아직 살아있는
-      // 동안) 뒤늦게 발화해 메모리에 남은 이전 학생의 코드/회로를 다시
-      // localStorage에 덮어쓸 수 있기 때문이다(Production에서 실제 확인된
-      // 원인). 이 차단은 되돌리지 않는다 — 이 페이지 인스턴스는 곧
-      // reload()로 사라지므로 다시 켤 필요가 없다.
+    exitBtn.addEventListener('click', async () => {
+      if (exitBtn.disabled) return; // 중복 클릭 방지
+      exitBtn.disabled = true;
+      exitBtn.textContent = '나가는 중...';
+
+      // 순서: 자동저장 차단 → 작업 상태 초기화 → 서버 세션 로그아웃 →
+      // StudentContext 삭제 → reload. 자동저장을 가장 먼저 끄는 이유: reset이
+      // localStorage를 깨끗하게 만든 뒤에도, 이미 예약돼 있던 디바운스
+      // 타이머나 pagehide가 reload가 실제로 페이지를 떠나기 전(같은 JS
+      // 컨텍스트가 아직 살아있는 동안) 뒤늦게 발화해 메모리에 남은 이전
+      // 학생의 코드/회로를 다시 localStorage에 덮어쓸 수 있기 때문이다
+      // (Production에서 실제 확인된 원인).
+      //
+      // 서버 로그아웃을 StudentContext 삭제/reload보다 먼저 성공시켜야 하는
+      // 이유: 로그아웃이 실패했는데 StudentContext만 지우고 다음 학생 입장
+      // 화면을 보여주면, 이전 학생의 HttpOnly student_session 쿠키가
+      // 브라우저에 그대로 남은 채로 다음 학생이 시뮬레이터를 쓰게 된다 —
+      // 그 쿠키가 앞으로 학습 Event API의 authorization 근거가 되므로 이는
+      // 실제 보안 문제다. 그래서 로그아웃 실패 시 조용히 넘어가지 않고,
+      // 자동저장을 되돌려 현재 학생이 안전하게 계속 쓸 수 있게 하고 재시도를
+      // 요구한다.
       disableWorkspaceAutosave();
       try {
         resetWorkspaceForNextStudent();
       } catch {
-        // 작업 상태 초기화가 실패해도 세션 종료(StudentContext 삭제)는
-        // 반드시 진행한다 — 최소한 다음 학생이 이전 학생의 로그인 상태를
-        // 이어받는 것만은 막는다.
+        // 작업 상태 초기화가 실패해도 로그아웃 시도는 계속 진행한다 —
+        // 최소한 이전 학생의 서버 세션은 반드시 끊어야 한다.
       }
+
+      let logoutOk = false;
+      try {
+        const res = await fetch('/api/student-session/logout', { method: 'POST' });
+        logoutOk = res.ok;
+      } catch {
+        logoutOk = false;
+      }
+
+      if (!logoutOk) {
+        enableWorkspaceAutosave(); // 이 페이지가 계속 쓰일 수 있으므로 자동저장을 되돌린다
+        exitBtn.disabled = false;
+        exitBtn.textContent = '나가기 실패 · 다시 시도';
+        return;
+      }
+
       clearStudentContext(); // StudentContext만 제거 — 명시적으로 저장한 프로젝트/교사 설정은 그대로 둔다
       location.reload(); // 새로고침이 initStudentEntryGate()를 다시 실행해 입장 dialog를 보여준다
     });

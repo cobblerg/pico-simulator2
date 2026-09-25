@@ -15,6 +15,11 @@
 // SUPABASE_URL/SUPABASE_SECRET_KEY는 createServerSupabaseClient()(서버 전용
 // 모듈)가 process.env에서만 읽는다 — 이 파일도, 그 어떤 값도 여기 직접
 // 작성하지 않는다.
+//
+// Stage 0-D9-A1: accepted일 때 handleStudentEntryRequest()가 HandlerResult에
+// headers(Set-Cookie: student_session, HttpOnly)를 함께 돌려준다. 이 파일은
+// 그 헤더를 그대로 res에 실어주기만 한다 — 토큰 자체를 만들거나 브라우저
+// JS가 읽을 수 있는 형태로 body에 넣지 않는다(HttpOnly 쿠키만 사용).
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createServerSupabaseClient } from '../src/server/supabase';
 import { createSupabaseStudentDataSource } from '../src/server/supabase-student-data';
@@ -36,10 +41,13 @@ export default async function handler(
     const client = createServerSupabaseClient();
     const dataSource = createSupabaseStudentDataSource(client);
 
-    const { httpStatus, body } = await handleStudentEntryRequest(req.method, rawBody, dataSource);
+    const { httpStatus, body, headers } = await handleStudentEntryRequest(req.method, rawBody, dataSource);
 
     res.statusCode = httpStatus;
     res.setHeader('Content-Type', 'application/json');
+    if (headers) {
+      for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+    }
     res.end(JSON.stringify(body));
   } catch {
     // 여기까지 온 예외(예: 환경변수 누락, 클라이언트 생성 실패)도 클라이언트에
