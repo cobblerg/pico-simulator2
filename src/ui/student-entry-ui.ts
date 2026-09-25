@@ -16,15 +16,21 @@
 // 호출된다.
 //
 // "다시 입장"(학생 교체) 시 현재 학생의 임시 작업 상태를 초기화하기 위해
-// project.ts/content-access.ts의 기존 함수(startWorkspace/saveWorkspace/
-// store, getSimulatorMissions)를 그대로 재사용한다 — app.ts는 여전히
-// import하지 않는다(app.ts의 mission/parts/editor 같은 메모리 상태는
-// 건드릴 필요가 없다 — 이 초기화 직후 location.reload()로 페이지 전체가
-// 새로 시작되며 app.ts가 localStorage를 처음부터 다시 읽기 때문이다).
+// project.ts의 기존 함수(startWorkspace/saveWorkspace/store)를 그대로
+// 재사용한다 — app.ts는 여전히 import하지 않는다(app.ts의 mission/parts/
+// editor 같은 메모리 상태는 건드릴 필요가 없다 — 이 초기화 직후
+// location.reload()로 페이지 전체가 새로 시작되며 app.ts가 localStorage를
+// 처음부터 다시 읽기 때문이다).
+//
+// 미션 목록은 content-access.ts의 getSimulatorMissions()가 아니라
+// data.ts의 MISSIONS를 직접 쓴다 — 둘은 현재 내용이 같지만(모든 미션이
+// simulator 타입), MISSIONS가 실제 "원본"(content.ts 자체 주석 참고)이고
+// 중간에 거치는 파생 레이어(content.ts/content-access.ts)가 하나 줄어들수록
+// 이 초기화가 그 레이어의 문제에 영향받을 가능성이 낮아진다.
 import { StudentContext } from './student-domain';
 import { toStudentContext } from './student-entry';
-import { store, startWorkspace, saveWorkspace } from './project';
-import { getSimulatorMissions } from './content-access';
+import { store, startWorkspace, saveWorkspace, Workspace } from './project';
+import { MISSIONS } from './data';
 
 const SESSION_KEY = 'picosim:student-context';
 
@@ -63,18 +69,50 @@ function saveStudentContext(ctx: StudentContext): void {
 // 수 있게 되는 새로운 유출 경로이기 때문이다.
 //
 // 미션은 하나만 초기화하지 않는다 — 학생이 여러 미션을 오가며 작업했을 수
-// 있으므로 getSimulatorMissions()로 전체 미션을 순회해 각 미션의 저장된
-// 작업 공간(picosim:ws:<missionId>)을 시작 상태로 되돌린다. picosim:passed
-// (미션 성공 표시)와 picosim:mission(마지막으로 선택된 미션)도 함께
-// 지워 다음 학생이 깨끗한 초기 상태에서 시작하게 한다.
+// 있으므로 전체 미션(MISSIONS)을 순회해 각 미션의 저장된 작업 공간
+// (picosim:ws:<missionId>)을 시작 상태로 되돌린다. picosim:passed(미션
+// 성공 표시)와 picosim:mission(마지막으로 선택된 미션)도 함께 지워 다음
+// 학생이 깨끗한 초기 상태에서 시작하게 한다.
 //
-// project.ts의 store.set/store.del은 내부적으로 이미 try/catch로 감싸져
-// 있어 개별 호출이 예외를 던지지 않는다 — 그래도 getSimulatorMissions()
-// 자체가 실패하는 것까지 대비해, 호출부(exitBtn 핸들러)에서 이 함수 전체를
-// 한 번 더 try/catch로 감싼다(아래 참고).
+// 견고성: Production에서 "현재 열려 있던 미션만 초기화되고 그 외 미션은
+// 초기화되지 않는" 문제가 보고됐다 — 이 환경에서 정확한 브라우저 재현은
+// 하지 못했지만(같은 시나리오를 실제 project.ts 코드로 재현한 결과, 단순
+// 반복문 자체는 두 미션 모두 정상 초기화함을 확인함), 코드 리뷰로
+// startWorkspace(m)이 project.ts의 store.set/store.del과 달리 try/catch로
+// 감싸여 있지 않다는 것을 확인했다 — activityFor(m)이 반환한 활동 설정의
+// preset이 배열이 아닌 등 손상된 값이면 a.preset.map(...)에서 예외가 나고,
+// 그 순간 반복문 전체가 중단돼 그 미션 이후(iteration 순서상 뒤에 오는
+// 미션들)는 초기화되지 않는다 — 관찰된 "처음 몇 개는 되고 나머지는 안 됨"
+// 패턴과 부합한다. 정확한 원인이 이것이라고 100% 확정할 수는 없으므로,
+// 어떤 이유로 실패하든 불변조건(모든 미션이 startWorkspace와 동일한 상태가
+// 되어야 한다)이 깨지지 않도록 다음 3중 방어를 둔다:
+//   1) 미션 하나의 실패가 나머지 미션 처리를 막지 못하게 미션별 try/catch로
+//      격리한다.
+//   2) 정상 초기화가 실패하면(catch), 최소한 이전 학생의 코드가 남지
+//      않도록 빈 작업 공간({parts:[], code:''})으로라도 강제 초기화한다
+//      (store.set류는 예외를 던지지 않으므로 이 강제 초기화는 항상 성공한다).
+//   3) saveWorkspace 이후 실제로 반영됐는지 즉시 읽어 확인하고, 다르면
+//      한 번 더 쓴다 — store.set이 내부에서 조용히 실패하는(예: quota)
+//      경우까지 방어한다.
 function resetWorkspaceForNextStudent(): void {
-  for (const m of getSimulatorMissions()) {
-    saveWorkspace(m, startWorkspace(m));
+  for (const m of MISSIONS) {
+    let fresh: Workspace;
+    try {
+      fresh = startWorkspace(m);
+      saveWorkspace(m, fresh);
+    } catch {
+      // startWorkspace(m) 자체가 실패한 경우 — 정확한 시작 상태는 못
+      // 만들어도, 최소한 이전 학생의 코드/회로가 남지 않게 빈 상태로
+      // 강제 초기화한다.
+      fresh = { parts: [], code: '' };
+      saveWorkspace(m, fresh);
+    }
+    // 쓰기 반영 확인 — code 문자열만 비교한다(parts의 id는 startWorkspace가
+    // 호출마다 새로 발급하므로 동일한 fresh 값을 그대로 재사용해 비교한다).
+    const verify = store.get<Workspace>('ws:' + m.id);
+    if (!verify || verify.code !== fresh.code) {
+      saveWorkspace(m, fresh);
+    }
     store.del('projectName:' + m.id);
   }
   store.del('passed');
