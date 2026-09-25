@@ -250,3 +250,49 @@ export function validateStudentEntry(
     classId: schoolClass.classId,
   };
 }
+
+// ---------- roster validation (Stage 0-D5-C2) ----------
+//
+// validateRosterEntry는 교사가 학생 명단을 등록할 때 한 행(row)이 유효한지
+// 판정하는 순수 함수다. validateStudentEntry와 마찬가지로 이미
+// normalizeRosterEntry()를 통과한 입력을 받는 것을 기본 계약으로 하며,
+// 내부에서 normalizeRosterEntry()를 다시 호출하지 않는다 — normalize와
+// validate의 책임을 분리하기 위함이다. 향후 orchestration layer가
+// raw input → normalizeRosterEntry() → duplicate lookup →
+// validateRosterEntry() 순서로 조합할 것을 전제한다.
+//
+// studentNo 중복 여부는 이 함수가 직접 DB/배열을 검색해서 찾지 않는다 —
+// context.studentNoTaken이라는 이미 계산된 boolean만 받는다. "중복 여부
+// 계산"은 향후 data access/orchestration 책임이고, "중복 판정"만 이 함수의
+// 책임이다. 이 결정을 담을 정보가 boolean 하나뿐이므로 별도 context 타입을
+// 만들지 않고 inline object type을 쓴다.
+//
+// 판정 우선순위(먼저 만족하는 조건이 결과를 결정한다. 한 번에 여러 오류를
+// 반환하지 않는다):
+//   1. input.studentNo === '' → missing-student-no
+//   2. input.name === '' → missing-name
+//   3. context.studentNoTaken === true → duplicate-student-no
+//   4. 위 전부 통과 → valid
+//
+// name 중복(동명이인)은 검사하지 않는다 — 동명이인은 정상 상황이고, 애초에
+// 이 함수의 context에는 이름 목록 자체가 없다. studentNo는 string 그대로
+// 비교한다: Number 변환, leading zero 제거/padding, 형식 추측을 하지 않는다.
+
+export function validateRosterEntry(
+  input: RosterEntryInput,
+  context: { studentNoTaken: boolean }
+): RosterEntryValidation {
+  if (input.studentNo === '') {
+    return { status: 'missing-student-no' };
+  }
+
+  if (input.name === '') {
+    return { status: 'missing-name' };
+  }
+
+  if (context.studentNoTaken === true) {
+    return { status: 'duplicate-student-no', studentNo: input.studentNo };
+  }
+
+  return { status: 'valid', entry: input };
+}
