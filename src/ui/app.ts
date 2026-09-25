@@ -15,6 +15,7 @@ import {
   ProjectFile, ActivityFile,
 } from './project';
 import { initStudentEntryGate } from './student-entry-ui';
+import { isWorkspaceAutosaveEnabled } from './workspace-autosave';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -87,11 +88,13 @@ const editor = createEditor($('#editor'), loadWorkspace(mission).code, (code, pa
 // ---------- 작업 자동 저장 (SIM-18) ----------
 let saveTimer: any = null;
 function saveWsSoon() {
+  if (!isWorkspaceAutosaveEnabled()) return; // 0-D8: 학생 교체 중에는 예약하지 않는다
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveWsNow, 400);
 }
 function saveWsNow() {
   clearTimeout(saveTimer);
+  if (!isWorkspaceAutosaveEnabled()) return; // 0-D8: 학생 교체 중에는 어떤 경로로도 저장하지 않는다(디바운스 타이머가 이미 예약돼 있었거나 pagehide로 호출된 경우 포함)
   saveWorkspace(mission, { parts, code: editor.get() });
 }
 window.addEventListener('pagehide', saveWsNow);

@@ -27,10 +27,24 @@
 // simulator 타입), MISSIONS가 실제 "원본"(content.ts 자체 주석 참고)이고
 // 중간에 거치는 파생 레이어(content.ts/content-access.ts)가 하나 줄어들수록
 // 이 초기화가 그 레이어의 문제에 영향받을 가능성이 낮아진다.
+//
+// Production에서 확인된 실제 원인: "다시 입장" 클릭 직전에 학생이 마지막으로
+// 편집하던 미션에 대해 예약된 자동저장 디바운스 타이머(app.ts의
+// saveWsSoon/saveWsNow, 400ms)가 resetWorkspaceForNextStudent() 이후에도
+// 취소되지 않고 남아 있다가, reload()가 실제로 페이지를 떠나기 전(아직 같은
+// JS 컨텍스트가 살아있는 동안) 뒤늦게 발화해 메모리에 남아있던 이전 학생의
+// 코드/회로를 방금 초기화한 localStorage 위에 다시 덮어썼다. 이를 막기
+// 위해 workspace-autosave.ts의 플래그를 켜기 전에(disableWorkspaceAutosave)
+// 먼저 꺼서, app.ts 쪽의 모든 자동저장 경로(디바운스 타이머든 pagehide든)가
+// 이 시점 이후로는 아무것도 쓰지 못하게 만든다. app.ts를 직접 import하지
+// 않는 이유는 app.ts가 이미 이 파일을 import하고 있어(초기화 훅) 순환
+// 의존이 생기기 때문이다 — 대신 두 파일이 공통으로 참조하는 작은 중립
+// 모듈(workspace-autosave.ts)을 통해서만 상태를 주고받는다.
 import { StudentContext } from './student-domain';
 import { toStudentContext } from './student-entry';
 import { store, startWorkspace, saveWorkspace, Workspace } from './project';
 import { MISSIONS } from './data';
+import { disableWorkspaceAutosave } from './workspace-autosave';
 
 const SESSION_KEY = 'picosim:student-context';
 
@@ -271,9 +285,15 @@ export function initStudentEntryGate(): void {
 
   if (exitBtn) {
     exitBtn.addEventListener('click', () => {
-      // 순서: 작업 상태 초기화 → StudentContext 삭제 → reload. 작업 상태
-      // 초기화를 먼저 해서, 이후 어떤 단계가 실패하더라도 최소한 저장된
-      // 작업 데이터는 이미 깨끗한 상태로 남게 한다.
+      // 순서: 자동저장 차단 → 작업 상태 초기화 → StudentContext 삭제 →
+      // reload. 자동저장을 가장 먼저 끄는 이유: reset이 localStorage를
+      // 깨끗하게 만든 뒤에도, 이미 예약돼 있던 디바운스 타이머나 pagehide가
+      // reload가 실제로 페이지를 떠나기 전(같은 JS 컨텍스트가 아직 살아있는
+      // 동안) 뒤늦게 발화해 메모리에 남은 이전 학생의 코드/회로를 다시
+      // localStorage에 덮어쓸 수 있기 때문이다(Production에서 실제 확인된
+      // 원인). 이 차단은 되돌리지 않는다 — 이 페이지 인스턴스는 곧
+      // reload()로 사라지므로 다시 켤 필요가 없다.
+      disableWorkspaceAutosave();
       try {
         resetWorkspaceForNextStudent();
       } catch {
