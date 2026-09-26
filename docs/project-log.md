@@ -807,3 +807,93 @@ Checked:
 ### Known Limitations
 - On first rollout, a browser with no owner key recorded yet will not reset on the very first entry after this fix ships, so previously-existing local state may still be visible once.
 - Multiple tabs on the same browser share the same localStorage: a student switch detected in one tab can reset workspace data that another tab is still using. This is a structural property of the current single-namespace localStorage design and was intentionally left out of scope for BUG-01/02.
+
+## 2026-09-26 — D11-B7 Resolved Soft Closure
+
+### Summary
+D11-B7은 post-retry reflection 이후 학생이 "이제 괜찮아요"를 선택했을 때 곧바로 질문 화면으로 복귀하지 않고, 짧은 resolved closure 안내를 보여주는 기능이다. 이는 학생의 자기보고를 공식 성공 판정으로 처리하지 않으면서, 흐름을 부드럽게 마무리하는 UI 단계다.
+
+### Problem / Motivation
+B6까지는 retry 후 reflection에서 "이제 괜찮아요" 선택 시 곧바로 질문 화면으로 돌아가 흐름이 다소 급하게 끝나는 느낌이 있었다. 학생의 자기보고를 checkpoint pass처럼 오해하지 않도록, 성공/완료/통과 표현 없이 짧은 중립 안내가 필요했다.
+
+### Design Decision
+- 기존 hypothesis 영역을 재사용한다.
+- 새 DOM/HTML을 추가하지 않는다.
+- 새 CoachingSession field를 추가하지 않는다.
+- Run 감지, 성공 판정, checkpoint 변경, logEvent, Supabase/OpenAI 호출을 추가하지 않는다.
+- resolved closure는 navigation-only UI다.
+- "이제 괜찮아요"는 학생 자기보고일 뿐, 공식 미션 성공 판정이 아니다.
+
+### Implementation
+- src/ui/coaching-reflection.ts
+  - resolvedMessage를 중립 문구로 조정: "알겠어요. 필요하면 다시 AI 학습 코치에서 확인할 수 있어요."
+- src/ui/app.ts
+  - currentCoachResolvedClosureVisible 추가
+  - RESOLVED_CLOSURE_BACK_LABEL 추가: "질문 화면으로 돌아가기"
+  - showResolvedClosure() 추가
+  - reflection secondary button path: reflection → resolved closure
+  - resolved closure button path: resolved closure → question screen
+  - action button hidden in resolved closure
+
+### Flow
+- level 3 hint action "실험해볼게요"
+- retry gate
+- "실행해봤어요"
+- post-retry reflection
+- "이제 괜찮아요"
+- resolved closure message
+- "질문 화면으로 돌아가기"
+- question screen
+
+다음 기존 흐름도 그대로 유지됨:
+- "다시 관찰해볼게요" → observation screen
+- retry gate secondary "돌아갈게요" → question screen
+- level 0/1/2 action → question screen
+- hint ladder / retry gate / reflection 기존 흐름 유지
+
+### Commit
+- 2db3049 feat: add resolved closure to AI coach
+
+### Verification
+- TypeScript PASS
+- npm run build에서 student artifacts 정상 생성
+- teacher.html은 기존 로컬 PUBLIC_SUPABASE_URL/PUBLIC_SUPABASE_ANON_KEY 미설정 문제로 실패, 이번 변경과 무관
+- Production deployment success
+- Production static verification success
+  - resolved closure message found
+  - "질문 화면으로 돌아가기" found
+  - old resolved message "좋아요..." absent
+  - B4/B5/B6 기존 문구 유지 확인
+
+### Explicit Non-Changes
+- src/index.html 변경 없음
+- styles.css 변경 없음
+- CoachingSession 필드 추가 없음
+- session reset 없음
+- mission transition policy 변경 없음
+- panel auto-close 없음
+- Run / Real Run 변경 없음
+- Stop / Reset 변경 없음
+- checkpoint evaluator 변경 없음
+- mission data 변경 없음
+- learning_event/logEvent 변경 없음
+- picosim:event listener 추가 없음
+- Supabase/OpenAI 호출 추가 없음
+- editor.get() 추가 없음
+- resolvedSelfReport / reflectionState / reObservationCount 추가 없음
+
+### Separate BUGs
+D11-B7 수동 확인 중 발견된 별도 이슈가 있었고, D11-B7과 직접 관련 없는 코드 경로로 분리 처리되었다.
+
+- BUG-StudentEntry-LocalState-01
+  - commit: 43d9652
+  - CLOSED
+- BUG-StudentEntry-LocalState-02
+  - commit: fed8cf0
+  - CLOSED
+- project-log 기록: 22a35f9
+
+이들은 D11-B7 resolved closure 코드와 직접 관련 없는 student entry/localStorage 이슈였음.
+
+### Status
+CLOSED
