@@ -150,6 +150,44 @@ function resetWorkspaceForNextStudent(): void {
   store.del('mission');
 }
 
+// 이 브라우저에서 로컬 workspace를 마지막으로 쓴 학생의 studentId. "나가기"
+// 없이 이탈한 학생 다음에 다른 학생이 입장해도 이전 workspace가 남는 문제를
+// 막기 위해, 입장 성공 시 이 값과 비교해 학생이 바뀌었는지만 판단한다.
+const OWNER_KEY = 'last-student-key';
+
+function buildWorkspaceOwnerKey(ctx: StudentContext): string {
+  return ctx.studentId;
+}
+
+function getLastWorkspaceOwnerKey(): string | null {
+  return store.get<string>(OWNER_KEY);
+}
+
+function setLastWorkspaceOwnerKey(key: string): void {
+  store.set(OWNER_KEY, key);
+}
+
+// 이전 owner가 없으면(첫 사용 등) "다른 학생"이라고 판단할 근거가 없으므로
+// reset하지 않고 이번 studentId만 기록한다. 같으면 그대로 두고, 다르면
+// resetWorkspaceForNextStudent()로 이전 학생의 workspace를 정리한다.
+function resetWorkspaceIfStudentChanged(ctx: StudentContext): boolean {
+  const currentKey = buildWorkspaceOwnerKey(ctx);
+  const previousKey = getLastWorkspaceOwnerKey();
+
+  if (!previousKey) {
+    setLastWorkspaceOwnerKey(currentKey);
+    return false;
+  }
+  if (previousKey === currentKey) {
+    return false;
+  }
+
+  disableWorkspaceAutosave();
+  resetWorkspaceForNextStudent();
+  setLastWorkspaceOwnerKey(currentKey);
+  return true;
+}
+
 // 손상된 값(JSON 파싱 실패, 필드 누락, 빈 문자열, 잘못된 타입)은 조용히
 // 지우고 미입장 상태로 취급한다 — 예외를 던지지 않는다.
 function loadStudentContext(): StudentContext | null {
@@ -285,6 +323,15 @@ export function initStudentEntryGate(): void {
           classId: body.classId,
         });
         saveStudentContext(ctx);
+
+        // 이전 owner와 studentId가 다르면 이전 학생의 workspace를 정리하고
+        // 곧바로 새로고침한다 — app.ts가 정리된 localStorage를 처음부터
+        // 다시 읽어야만 화면(에디터/보드/미션 목록)에도 반영되기 때문이다.
+        if (resetWorkspaceIfStudentChanged(ctx)) {
+          location.reload();
+          return;
+        }
+
         form.reset(); // classCode/studentNo/name을 DOM에서 제거
         allowClose = true; // 유일하게 승인된 close 경로
         dialog!.close();
