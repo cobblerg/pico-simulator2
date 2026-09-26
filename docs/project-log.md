@@ -573,3 +573,150 @@ Implication:
 
 ### Notes
 D11-B5 intentionally does not detect Run or Real Run completion. The retry gate is a soft interstitial that encourages the student to act or retry, while still allowing them to return to the question screen. Passive picosim:event-based Run detection remains a possible future enhancement but was not included in this stage.
+
+## 2026-09-26 — D11-B6 Post-Retry Reflection Flow
+
+### Status
+CLOSED
+
+### Commit
+- commit: c355b4a3df8b4f2e7a4ecbdf6b60551ffcd6aeb6
+- short hash: c355b4a
+- message: feat: add post-retry reflection flow
+
+### Deployment
+- Production URL: https://pico-simulator2.vercel.app
+- Vercel deployment: success
+- GitHub push: success
+- origin/main: 26889c2 → c355b4a
+
+### Completed Scope
+- Added static post-retry reflection copy module.
+- Added src/ui/coaching-reflection.ts.
+- Added CoachingReflectionPrompt type.
+- Added POST_RETRY_REFLECTION_PROMPT.
+- Added getPostRetryReflectionPrompt().
+- Connected post-retry reflection UI after retry gate primary action.
+- Changed retry gate primary flow so that "실행해봤어요" shows the reflection prompt instead of immediately returning to the question screen.
+- Reused the existing hypothesis message area for the reflection guidance.
+- Reused the existing hypothesis action button as the re-observation action.
+- Reused the existing hypothesis back button as the resolved self-report action.
+- Connected "다시 관찰해볼게요" to the existing observation screen.
+- Connected "이제 괜찮아요" to the existing question screen.
+- Kept the existing B3 observation choices unchanged.
+- Kept retry gate secondary "돌아갈게요" returning to the question screen.
+- Kept the flow as a soft, optional reflection step rather than a blocking gate.
+
+### Reflection Copy
+Guidance:
+- 다시 확인해 본 결과, 무엇이 달라졌나요?
+
+Re-observation action:
+- 다시 관찰해볼게요
+
+Resolved self-report action:
+- 이제 괜찮아요
+
+Resolved message:
+- 좋아요. 필요하면 다시 AI 학습 코치를 열어 확인할 수 있어요.
+
+### Design Decision
+D11-B6 intentionally uses a short two-button reflection step after the retry gate primary action.
+
+Reason:
+- The retry gate asks whether the student has acted or retried.
+- The reflection step asks what the student wants to do after checking again.
+- Some students may still need to observe the result again.
+- Some students may feel ready to continue without another observation cycle.
+- Sending every student directly back to the observation screen could imply that the problem is still unresolved.
+- A two-button reflection step gives students a natural choice without forcing another loop.
+
+### Resolved Self-Report Boundary
+- "이제 괜찮아요" is treated only as the student's self-report.
+- It is not treated as checkpoint pass.
+- It is not treated as mission success.
+- It does not change the #check result.
+- It does not auto-run code.
+- It does not close the panel automatically.
+- It does not write to learning_event.
+- It does not add any evaluation record.
+- It does not add a CoachingSession field.
+
+### Explicit Non-Changes
+- No OpenAI API call.
+- No AI-generated guidance.
+- No student code analysis.
+- No editor.get() call.
+- No Supabase schema change.
+- No migration.
+- No learning_event change.
+- No new logEvent call.
+- No student_session change.
+- No server API change.
+- No Run / Real Run logic change.
+- No Stop / Reset logic change.
+- No checkpoint evaluator change.
+- No mission data change.
+- No free-text student input.
+- No picosim:event listener.
+- No Run detection.
+- No retryDetected field.
+- No retryCount field.
+- No attemptCount field.
+- No resolvedSelfReport field.
+- No reflectionState field.
+- No reObservationCount field.
+- No CoachingSession field added for D11-B6.
+- No automatic Run action.
+- No student identity stored in CoachingSession.
+- StudentEntry-LocalState-01 remains a separate issue.
+
+### Verification Completed
+- Static code review completed.
+- Type-check completed for app.ts.
+- Type-check completed for coaching-reflection.ts.
+- Type-check completed for AI Coach related files.
+- Student build artifacts generated successfully.
+- Vercel Production deployment completed successfully.
+- Production HTML/JS bundle contains D11-B6-related strings.
+- HTTP 200 OK confirmed for Production page.
+- Manual Production UI verification completed by the user.
+
+### Manual Production Verification
+Result: PASS
+
+Checked:
+- AI 학습 코치 button worked.
+- tried-not-working / result-unclear paths reached the observation screen.
+- Observation selection reached the hypothesis focus screen.
+- Hypothesis focus selection displayed the existing B3 guidance first.
+- "더 힌트가 필요해요" button appeared.
+- Level 1 hint flow worked.
+- Level 2 hint flow worked.
+- Level 3 hint flow worked.
+- Level 3 action "실험해볼게요" displayed the retry gate.
+- Retry gate primary action "실행해봤어요" displayed the reflection prompt.
+- Reflection guidance "다시 확인해 본 결과, 무엇이 달라졌나요?" was displayed.
+- Reflection primary action "다시 관찰해볼게요" was displayed.
+- Reflection secondary action "이제 괜찮아요" was displayed.
+- "다시 관찰해볼게요" moved to the existing observation screen.
+- The existing four observation choices were shown.
+- "이제 괜찮아요" returned to the question screen.
+- Re-entering the hypothesis screen restored the back button label to "다른 이유 고르기".
+- Run / Stop / Reset remained normal.
+- No new blocking issue was reported.
+
+### Known Behavior
+The D11-B6 reflection step is shown only after the B5 retry gate primary action.
+
+Flow:
+- Level 3 hint action "실험해볼게요"
+- Retry gate
+- "실행해봤어요"
+- Reflection prompt
+- "다시 관찰해볼게요" or "이제 괜찮아요"
+
+"이제 괜찮아요" does not mean the simulator checkpoint passed. The official mission result remains controlled by the existing checkpoint logic and #check area.
+
+### Notes
+D11-B6 intentionally does not detect Run or Real Run completion. The reflection step is a soft post-retry prompt that helps students decide whether to observe again or continue. Passive picosim:event-based Run detection remains a possible future enhancement but was not included in this stage.
