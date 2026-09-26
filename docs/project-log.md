@@ -327,3 +327,127 @@ Checked:
 
 ### Notes
 This bug was discovered during D11-B3 manual verification but was not caused by D11-B3. It was an existing mission result-message fallback issue in the checkpoint display flow.
+
+## 2026-09-26 — D11-B4 Adaptive Hint Ladder
+
+### Status
+CLOSED
+
+### Commit
+- commit: 6521f10bc8848aaf0871ee9be7dd4a8046057583
+- short hash: 6521f10
+- message: feat: add adaptive hint ladder
+
+### Deployment
+- Production URL: https://pico-simulator2.vercel.app
+- Vercel deployment: success
+- GitHub push: success
+- origin/main: 8f3cbcc → 6521f10
+
+### Completed Scope
+- Added mission-scoped CoachingSession.hintLevel.
+- Added advanceHintLevel(missionId).
+- Added static adaptive hint ladder content.
+- Added src/ui/coaching-hint.ts.
+- Added HintLevel type.
+- Added CoachingHint type.
+- Added MAX_COACHING_HINT_LEVEL.
+- Added COACHING_HINTS for four hypothesisFocus values.
+- Added getCoachingHint(focus, hintLevel).
+- Added "더 힌트가 필요해요" button to the AI Coach hypothesis screen.
+- Connected hint display to the existing hypothesisFocus screen.
+- Reused the existing ai-coach-hypothesis-message area for hint display.
+- Reused the existing hypothesis action button for hint action labels.
+- Connected hint progression to mission-scoped CoachingSession.hintLevel.
+- Capped hint progression at level 3.
+- Hid the "더 힌트가 필요해요" button after level 3.
+- Preserved the existing B3 guidance before the first hint request.
+
+### Hint Ladder Design
+D11-B4 uses hypothesisFocus as the adaptive signal.
+
+Supported focus values:
+- code
+- wiring
+- device-behavior
+- not-sure
+
+Hint levels:
+- level 1: 다시 볼 대상 안내
+- level 2: 비교 기준 좁히기
+- level 3: 다음 실험 행동 제안
+
+The hint ladder is intentionally static and does not use AI-generated responses.
+
+### Explicit Non-Changes
+- No OpenAI API call.
+- No AI-generated hint.
+- No student code analysis.
+- No editor.get() call.
+- No Supabase schema change.
+- No migration.
+- No learning_event change.
+- No logEvent call for hint usage.
+- No student_session change.
+- No server API change.
+- No Run / Real Run logic change.
+- No checkpoint evaluator change.
+- No mission data change.
+- No free-text student input.
+- No retry/attempt state.
+- No automatic Run action.
+- No student identity stored in CoachingSession.
+
+### Verification Completed
+- Static code review completed.
+- Type-check completed for app.ts.
+- Type-check completed for coaching-session.ts.
+- Type-check completed for coaching-hint.ts.
+- Type-check completed for coaching-scaffold.ts.
+- Type-check completed for coaching-observation.ts.
+- Student build artifacts generated successfully.
+- Vercel Production deployment completed successfully.
+- Production HTML/JS bundle contains D11-B4-related strings.
+- HTTP 200 OK confirmed for Production page.
+- Manual Production UI verification completed by the user.
+
+### Manual Production Verification
+Result: PASS
+
+Checked:
+- AI 학습 코치 button worked.
+- tried-not-working / result-unclear paths reached the observation screen.
+- Observation selection reached the hypothesis focus screen.
+- Hypothesis focus selection displayed the existing B3 guidance first.
+- "더 힌트가 필요해요" button appeared.
+- First hint request displayed level 1 hint.
+- Second hint request displayed level 2 hint.
+- Third hint request displayed level 3 hint.
+- "더 힌트가 필요해요" button disappeared at level 3.
+- Hint action button returned to the question screen.
+- Mission-level hint state behaved correctly.
+- Run / Stop / Reset remained normal.
+- No new blocking issue was reported.
+
+### Known Separate Issue Found During Manual Verification
+During Production manual verification, the user observed that previous local work remained visible after opening https://pico-simulator2.vercel.app and reaching the student entry modal.
+
+Observed:
+- The student entry modal was displayed.
+- The simulator behind the modal still showed a previously edited mission/code state.
+
+Initial interpretation:
+- This appears to be existing browser-local simulator state persistence.
+- It is likely related to local saved project state, browser storage, or prior session UI state.
+- It was not introduced by D11-B4.
+- D11-B4 did not modify student entry, local project persistence, saved project loading, or simulator reset behavior.
+
+Disposition:
+- This does not block D11-B4 closure.
+- Track separately as a future issue if needed.
+
+Suggested future issue:
+- StudentEntry-LocalState-01: Decide whether student entry should reset or isolate previous browser-local simulator state.
+
+### Notes
+D11-B4 intentionally remains client-side and in-memory only. The hint ladder uses static guidance based on hypothesisFocus and hintLevel. It does not analyze student code, infer student ability, generate AI responses, or record hint usage to learning_event. Retry / Action Gate behavior is deferred to D11-B5.
