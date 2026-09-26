@@ -451,3 +451,125 @@ Suggested future issue:
 
 ### Notes
 D11-B4 intentionally remains client-side and in-memory only. The hint ladder uses static guidance based on hypothesisFocus and hintLevel. It does not analyze student code, infer student ability, generate AI responses, or record hint usage to learning_event. Retry / Action Gate behavior is deferred to D11-B5.
+
+## 2026-09-26 — D11-B5 Action / Retry Gate
+
+### Status
+CLOSED
+
+### Commit
+- commit: a353fd10cecdb53a738cb8f9ed91f74a98c8e3cd
+- short hash: a353fd1
+- message: feat: add retry gate after level 3 hint
+
+### Deployment
+- Production URL: https://pico-simulator2.vercel.app
+- Vercel deployment: success
+- GitHub push: success
+- origin/main: 71f5edc → a353fd1
+
+### Completed Scope
+- Added static retry gate copy module.
+- Added src/ui/coaching-retry.ts.
+- Added CoachingRetryGate type.
+- Added LEVEL_3_RETRY_GATE.
+- Added getLevel3RetryGate().
+- Connected retry gate UI after level 3 hint action.
+- Reused the existing hypothesis message area for retry gate guidance.
+- Reused the existing hypothesis action button as the primary retry gate button.
+- Reused the existing hypothesis back button as the secondary retry gate button.
+- Changed the level 3 hint action flow so that "실험해볼게요" shows the retry gate instead of immediately returning to the question screen.
+- Kept level 0, level 1, and level 2 action flows returning directly to the question screen.
+- Kept retry gate primary and secondary buttons returning to the question screen.
+- Restored the hypothesis back button label to "다른 이유 고르기" when re-entering the hypothesis screen.
+- Kept the retry gate as a soft, skippable interstitial rather than a blocking gate.
+
+### Retry Gate Copy
+Guidance:
+- 지금까지 확인한 것을 바탕으로 다시 한 번 실행해 볼까요? 실행해봤다면 아래 버튼을 눌러 주세요.
+
+Primary action:
+- 실행해봤어요
+
+Secondary action:
+- 돌아갈게요
+
+### Design Decision
+D11-B5 intentionally uses a soft self-report gate rather than a mandatory Run-detection gate.
+
+Reason:
+- Action and Retry are related but not identical.
+- Some useful student actions, such as checking wiring or comparing device behavior, may not require pressing Run immediately.
+- Run detection does not fully represent all meaningful student actions.
+- A hard gate could unnecessarily block beginner students.
+- The retry gate should encourage action, not enforce it.
+
+### Explicit Non-Changes
+- No OpenAI API call.
+- No AI-generated guidance.
+- No student code analysis.
+- No editor.get() call.
+- No Supabase schema change.
+- No migration.
+- No learning_event change.
+- No new logEvent call.
+- No student_session change.
+- No server API change.
+- No Run / Real Run logic change.
+- No Stop / Reset logic change.
+- No checkpoint evaluator change.
+- No mission data change.
+- No free-text student input.
+- No picosim:event listener.
+- No retryDetected field.
+- No retryCount field.
+- No attemptCount field.
+- No CoachingSession field added for D11-B5.
+- No automatic Run action.
+- No student identity stored in CoachingSession.
+- StudentEntry-LocalState-01 remains a separate issue.
+
+### Verification Completed
+- Static code review completed.
+- Type-check completed for app.ts.
+- Type-check completed for coaching-retry.ts.
+- Type-check completed for AI Coach related files.
+- Student build artifacts generated successfully.
+- Vercel Production deployment completed successfully.
+- Production HTML/JS bundle contains D11-B5-related strings.
+- HTTP 200 OK confirmed for Production page.
+- Manual Production UI verification completed by the user.
+
+### Manual Production Verification
+Result: PASS
+
+Checked:
+- AI 학습 코치 button worked.
+- tried-not-working / result-unclear paths reached the observation screen.
+- Observation selection reached the hypothesis focus screen.
+- Hypothesis focus selection displayed the existing B3 guidance first.
+- "더 힌트가 필요해요" button appeared.
+- Level 1 hint flow worked.
+- Level 2 hint flow worked.
+- Level 3 hint flow worked.
+- Level 3 action "실험해볼게요" displayed the retry gate.
+- Retry gate guidance was displayed.
+- Retry gate primary action "실행해봤어요" was displayed.
+- Retry gate secondary action "돌아갈게요" was displayed.
+- "실행해봤어요" returned to the question screen.
+- "돌아갈게요" returned to the question screen.
+- Re-entering the hypothesis screen restored the back button label to "다른 이유 고르기".
+- Run / Stop / Reset remained normal.
+- No new blocking issue was reported.
+
+### Known Behavior
+The mission-scoped hintLevel introduced in D11-B4 persists within the in-memory CoachingSession for the current mission.
+
+Implication:
+- If a student already reached hintLevel 2 in the same mission, the next "더 힌트가 필요해요" click can advance to hintLevel 3.
+- In that case, the level 3 action can lead to the retry gate sooner than a fresh mission session.
+- This is expected behavior based on the B4 mission-scoped hintLevel design.
+- It is not treated as a blocker for D11-B5.
+
+### Notes
+D11-B5 intentionally does not detect Run or Real Run completion. The retry gate is a soft interstitial that encourages the student to act or retry, while still allowing them to return to the question screen. Passive picosim:event-based Run detection remains a possible future enhancement but was not included in this stage.
