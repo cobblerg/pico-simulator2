@@ -21,6 +21,7 @@ import { advanceHintLevel, getOrCreateCoachingSession, setHypothesisFocus, setOb
 import { COACHING_SCAFFOLDS, getCoachingScaffold } from './coaching-scaffold';
 import { OBSERVATION_SCAFFOLDS, HYPOTHESIS_FOCUS_SCAFFOLDS, getObservationScaffold, getHypothesisFocusScaffold } from './coaching-observation';
 import { getCoachingHint, MAX_COACHING_HINT_LEVEL, type HintLevel } from './coaching-hint';
+import { getLevel3RetryGate } from './coaching-retry';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -933,6 +934,9 @@ const aiCoachHypothesisMessage = $('#ai-coach-hypothesis-message');
 const aiCoachHypothesisAction = $('#ai-coach-hypothesis-action');
 const aiCoachHypothesisBack = $('#ai-coach-hypothesis-back');
 const aiCoachHintMore = $('#ai-coach-hint-more');
+// #ai-coach-hypothesis-back의 기본 문구다. retry gate가 이 버튼을 잠시
+// secondaryActionLabel로 바꿔 쓰므로, 원래 문구로 되돌릴 때 이 상수를 쓴다.
+const HYPOTHESIS_BACK_LABEL = '다른 이유 고르기';
 
 // 화면 전환에만 쓰이는 local UI state다. CoachingSession에는 저장하지
 // 않는다 — 패널을 닫았다 다시 열면 항상 질문 화면부터 다시 시작한다
@@ -943,6 +947,9 @@ let currentCoachHypothesisFocus: HypothesisFocus | null = null;
 // 화면에 지금 보여주고 있는 B4 힌트 단계(0=아직 안 봄, 1~3). session의
 // hintLevel과는 별개의 local UI state다.
 let currentCoachHintLevel = 0;
+// level 3 힌트의 행동 버튼을 누른 뒤 retry gate 인터스티셜이 보이는
+// 중인지를 나타내는 local UI state다. CoachingSession에는 저장하지 않는다.
+let currentCoachRetryGateVisible = false;
 
 // 관찰/가설 화면을 "선택지 목록만 보이는 초기 상태"로 되돌린다.
 function resetCoachObservation() {
@@ -956,12 +963,14 @@ function resetCoachObservation() {
 function resetCoachHypothesis() {
   currentCoachHypothesisFocus = null;
   currentCoachHintLevel = 0;
+  currentCoachRetryGateVisible = false;
   aiCoachHypothesisList.hidden = false;
   aiCoachHypothesisMessage.hidden = true;
   aiCoachHypothesisMessage.textContent = '';
   aiCoachHypothesisAction.hidden = true;
   aiCoachHypothesisAction.textContent = '';
   aiCoachHintMore.hidden = true;
+  aiCoachHypothesisBack.textContent = HYPOTHESIS_BACK_LABEL;
 }
 
 // currentCoachHintLevel(0~3의 number)을 getCoachingHint가 받는 1|2|3으로
@@ -984,6 +993,19 @@ function showCurrentHint() {
   aiCoachHypothesisAction.textContent = hint.actionLabel;
   aiCoachHypothesisAction.hidden = false;
   aiCoachHintMore.hidden = currentCoachHintLevel >= MAX_COACHING_HINT_LEVEL;
+}
+// level 3 힌트의 행동 버튼을 누른 뒤 보여주는 재실행 유도 인터스티셜이다.
+// 새 화면을 만들지 않고 기존 hypothesis message/action/back 영역을 그대로
+// 재사용한다 — "더 힌트가 필요해요"는 더 보여줄 단계가 없으므로 숨긴다.
+function showRetryGate() {
+  const gate = getLevel3RetryGate();
+  currentCoachRetryGateVisible = true;
+  aiCoachHypothesisMessage.textContent = gate.guidanceMessage;
+  aiCoachHypothesisMessage.hidden = false;
+  aiCoachHypothesisAction.textContent = gate.primaryActionLabel;
+  aiCoachHypothesisAction.hidden = false;
+  aiCoachHintMore.hidden = true;
+  aiCoachHypothesisBack.textContent = gate.secondaryActionLabel;
 }
 
 function showCoachQuestion() {
@@ -1067,6 +1089,9 @@ function showCoachHypothesis() {
     // B3 guidanceMessage를 그대로 두고, "더 힌트가 필요해요" 버튼만 드러낸다.
     currentCoachHintLevel = 0;
     aiCoachHintMore.hidden = false;
+    // 이전에 retry gate를 봤더라도 새로 focus를 고르면 처음부터 다시 시작한다.
+    currentCoachRetryGateVisible = false;
+    aiCoachHypothesisBack.textContent = HYPOTHESIS_BACK_LABEL;
   });
   aiCoachHypothesisList.appendChild(b);
 });
@@ -1081,7 +1106,21 @@ aiCoachAction.addEventListener('click', () => {
 aiCoachBack.addEventListener('click', () => showCoachQuestion());
 aiCoachObservationAction.addEventListener('click', () => showCoachHypothesis());
 aiCoachObservationBack.addEventListener('click', () => showCoachQuestion());
-aiCoachHypothesisAction.addEventListener('click', () => showCoachQuestion());
+// level 0~2 힌트(또는 아직 힌트를 안 본 상태)의 행동 버튼은 곧장 질문
+// 화면으로 돌아간다. level 3 힌트의 행동 버튼("실험해볼게요")은 대신
+// retry gate 인터스티셜을 한 번 보여준다. retry gate가 이미 보이는
+// 상태(primaryActionLabel, "실행해봤어요")에서는 질문 화면으로 돌아간다.
+aiCoachHypothesisAction.addEventListener('click', () => {
+  if (currentCoachRetryGateVisible) {
+    showCoachQuestion();
+    return;
+  }
+  if (currentCoachHintLevel >= MAX_COACHING_HINT_LEVEL) {
+    showRetryGate();
+    return;
+  }
+  showCoachQuestion();
+});
 aiCoachHypothesisBack.addEventListener('click', () => showCoachQuestion());
 aiCoachHintMore.addEventListener('click', () => {
   const session = advanceHintLevel(mission.id);
