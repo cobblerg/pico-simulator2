@@ -22,6 +22,7 @@ import { COACHING_SCAFFOLDS, getCoachingScaffold } from './coaching-scaffold';
 import { OBSERVATION_SCAFFOLDS, HYPOTHESIS_FOCUS_SCAFFOLDS, getObservationScaffold, getHypothesisFocusScaffold } from './coaching-observation';
 import { getCoachingHint, MAX_COACHING_HINT_LEVEL, type HintLevel } from './coaching-hint';
 import { getLevel3RetryGate } from './coaching-retry';
+import { getPostRetryReflectionPrompt } from './coaching-reflection';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -950,6 +951,9 @@ let currentCoachHintLevel = 0;
 // level 3 힌트의 행동 버튼을 누른 뒤 retry gate 인터스티셜이 보이는
 // 중인지를 나타내는 local UI state다. CoachingSession에는 저장하지 않는다.
 let currentCoachRetryGateVisible = false;
+// retry gate의 행동 버튼을 누른 뒤 post-retry reflection 갈림길이 보이는
+// 중인지를 나타내는 local UI state다. CoachingSession에는 저장하지 않는다.
+let currentCoachReflectionVisible = false;
 
 // 관찰/가설 화면을 "선택지 목록만 보이는 초기 상태"로 되돌린다.
 function resetCoachObservation() {
@@ -964,6 +968,7 @@ function resetCoachHypothesis() {
   currentCoachHypothesisFocus = null;
   currentCoachHintLevel = 0;
   currentCoachRetryGateVisible = false;
+  currentCoachReflectionVisible = false;
   aiCoachHypothesisList.hidden = false;
   aiCoachHypothesisMessage.hidden = true;
   aiCoachHypothesisMessage.textContent = '';
@@ -1006,6 +1011,21 @@ function showRetryGate() {
   aiCoachHypothesisAction.hidden = false;
   aiCoachHintMore.hidden = true;
   aiCoachHypothesisBack.textContent = gate.secondaryActionLabel;
+}
+// retry gate의 행동 버튼을 누른 뒤 보여주는 post-retry reflection
+// 갈림길이다. 새 화면을 만들지 않고 기존 hypothesis message/action/back
+// 영역을 그대로 재사용한다 — "더 힌트가 필요해요"는 더 보여줄 단계가
+// 없으므로 숨긴다.
+function showPostRetryReflection() {
+  const reflection = getPostRetryReflectionPrompt();
+  currentCoachReflectionVisible = true;
+  currentCoachRetryGateVisible = false;
+  aiCoachHypothesisMessage.textContent = reflection.guidanceMessage;
+  aiCoachHypothesisMessage.hidden = false;
+  aiCoachHypothesisAction.textContent = reflection.reobserveActionLabel;
+  aiCoachHypothesisAction.hidden = false;
+  aiCoachHintMore.hidden = true;
+  aiCoachHypothesisBack.textContent = reflection.resolvedActionLabel;
 }
 
 function showCoachQuestion() {
@@ -1089,8 +1109,9 @@ function showCoachHypothesis() {
     // B3 guidanceMessage를 그대로 두고, "더 힌트가 필요해요" 버튼만 드러낸다.
     currentCoachHintLevel = 0;
     aiCoachHintMore.hidden = false;
-    // 이전에 retry gate를 봤더라도 새로 focus를 고르면 처음부터 다시 시작한다.
+    // 이전에 retry gate/reflection을 봤더라도 새로 focus를 고르면 처음부터 다시 시작한다.
     currentCoachRetryGateVisible = false;
+    currentCoachReflectionVisible = false;
     aiCoachHypothesisBack.textContent = HYPOTHESIS_BACK_LABEL;
   });
   aiCoachHypothesisList.appendChild(b);
@@ -1108,11 +1129,17 @@ aiCoachObservationAction.addEventListener('click', () => showCoachHypothesis());
 aiCoachObservationBack.addEventListener('click', () => showCoachQuestion());
 // level 0~2 힌트(또는 아직 힌트를 안 본 상태)의 행동 버튼은 곧장 질문
 // 화면으로 돌아간다. level 3 힌트의 행동 버튼("실험해볼게요")은 대신
-// retry gate 인터스티셜을 한 번 보여준다. retry gate가 이미 보이는
-// 상태(primaryActionLabel, "실행해봤어요")에서는 질문 화면으로 돌아간다.
+// retry gate 인터스티셜을 한 번 보여준다. retry gate가 보이는 상태
+// (primaryActionLabel, "실행해봤어요")에서는 post-retry reflection
+// 갈림길을 한 번 보여준다. reflection이 보이는 상태
+// (reobserveActionLabel, "다시 관찰해볼게요")에서는 관찰 화면으로 이동한다.
 aiCoachHypothesisAction.addEventListener('click', () => {
+  if (currentCoachReflectionVisible) {
+    showCoachObservation();
+    return;
+  }
   if (currentCoachRetryGateVisible) {
-    showCoachQuestion();
+    showPostRetryReflection();
     return;
   }
   if (currentCoachHintLevel >= MAX_COACHING_HINT_LEVEL) {
