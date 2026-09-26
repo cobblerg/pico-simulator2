@@ -17,9 +17,10 @@ import {
 import { initStudentEntryGate } from './student-entry-ui';
 import { isWorkspaceAutosaveEnabled } from './workspace-autosave';
 import { initLearningEventSink } from './learning-event-sink';
-import { getOrCreateCoachingSession, setHypothesisFocus, setObservation, setStuckReason, type StuckReason, type ObservationChoice, type HypothesisFocus } from './coaching-session';
+import { advanceHintLevel, getOrCreateCoachingSession, setHypothesisFocus, setObservation, setStuckReason, type StuckReason, type ObservationChoice, type HypothesisFocus } from './coaching-session';
 import { COACHING_SCAFFOLDS, getCoachingScaffold } from './coaching-scaffold';
 import { OBSERVATION_SCAFFOLDS, HYPOTHESIS_FOCUS_SCAFFOLDS, getObservationScaffold, getHypothesisFocusScaffold } from './coaching-observation';
+import { getCoachingHint, MAX_COACHING_HINT_LEVEL, type HintLevel } from './coaching-hint';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -931,6 +932,7 @@ const aiCoachHypothesisList = $('#ai-coach-hypothesis-list');
 const aiCoachHypothesisMessage = $('#ai-coach-hypothesis-message');
 const aiCoachHypothesisAction = $('#ai-coach-hypothesis-action');
 const aiCoachHypothesisBack = $('#ai-coach-hypothesis-back');
+const aiCoachHintMore = $('#ai-coach-hint-more');
 
 // 화면 전환에만 쓰이는 local UI state다. CoachingSession에는 저장하지
 // 않는다 — 패널을 닫았다 다시 열면 항상 질문 화면부터 다시 시작한다
@@ -938,6 +940,9 @@ const aiCoachHypothesisBack = $('#ai-coach-hypothesis-back');
 let currentCoachReason: StuckReason | null = null;
 let currentCoachObservation: ObservationChoice | null = null;
 let currentCoachHypothesisFocus: HypothesisFocus | null = null;
+// 화면에 지금 보여주고 있는 B4 힌트 단계(0=아직 안 봄, 1~3). session의
+// hintLevel과는 별개의 local UI state다.
+let currentCoachHintLevel = 0;
 
 // 관찰/가설 화면을 "선택지 목록만 보이는 초기 상태"로 되돌린다.
 function resetCoachObservation() {
@@ -950,11 +955,35 @@ function resetCoachObservation() {
 }
 function resetCoachHypothesis() {
   currentCoachHypothesisFocus = null;
+  currentCoachHintLevel = 0;
   aiCoachHypothesisList.hidden = false;
   aiCoachHypothesisMessage.hidden = true;
   aiCoachHypothesisMessage.textContent = '';
   aiCoachHypothesisAction.hidden = true;
   aiCoachHypothesisAction.textContent = '';
+  aiCoachHintMore.hidden = true;
+}
+
+// currentCoachHintLevel(0~3의 number)을 getCoachingHint가 받는 1|2|3으로
+// 좁힌다. 0이면 아직 B4 힌트를 보여줄 단계가 아니라는 뜻이라 null을 반환한다.
+function toHintLevel(value: number): HintLevel | null {
+  if (value === 1 || value === 2 || value === 3) return value;
+  return null;
+}
+// 현재 hypothesisFocus + currentCoachHintLevel에 해당하는 B4 힌트를
+// 기존 hypothesis 안내 영역(aiCoachHypothesisMessage/Action)에 그대로
+// 표시한다 — 새 DOM을 만들지 않는다. 최대 단계에 도달하면 "더 힌트가
+// 필요해요" 버튼을 숨겨 더 이상 진행할 수 없게 한다.
+function showCurrentHint() {
+  if (!currentCoachHypothesisFocus) return;
+  const hintLevel = toHintLevel(currentCoachHintLevel);
+  if (!hintLevel) return;
+  const hint = getCoachingHint(currentCoachHypothesisFocus, hintLevel);
+  aiCoachHypothesisMessage.textContent = hint.guidanceMessage;
+  aiCoachHypothesisMessage.hidden = false;
+  aiCoachHypothesisAction.textContent = hint.actionLabel;
+  aiCoachHypothesisAction.hidden = false;
+  aiCoachHintMore.hidden = currentCoachHintLevel >= MAX_COACHING_HINT_LEVEL;
 }
 
 function showCoachQuestion() {
@@ -1034,6 +1063,10 @@ function showCoachHypothesis() {
     aiCoachHypothesisAction.textContent = s.actionLabel;
     aiCoachHypothesisAction.hidden = false;
     aiCoachHypothesisList.hidden = true;
+    // focus를 막 골랐을 때는 아직 B4 힌트를 보여줄 단계가 아니다 — 기존
+    // B3 guidanceMessage를 그대로 두고, "더 힌트가 필요해요" 버튼만 드러낸다.
+    currentCoachHintLevel = 0;
+    aiCoachHintMore.hidden = false;
   });
   aiCoachHypothesisList.appendChild(b);
 });
@@ -1050,6 +1083,11 @@ aiCoachObservationAction.addEventListener('click', () => showCoachHypothesis());
 aiCoachObservationBack.addEventListener('click', () => showCoachQuestion());
 aiCoachHypothesisAction.addEventListener('click', () => showCoachQuestion());
 aiCoachHypothesisBack.addEventListener('click', () => showCoachQuestion());
+aiCoachHintMore.addEventListener('click', () => {
+  const session = advanceHintLevel(mission.id);
+  currentCoachHintLevel = session.hintLevel;
+  showCurrentHint();
+});
 
 function setAiCoachPanel(open: boolean) {
   aiCoachPanel.hidden = !open;

@@ -39,7 +39,12 @@ export type CoachingSession = {
   stuckReason: StuckReason | null;
   observation: ObservationChoice | null;
   hypothesisFocus: HypothesisFocus | null;
+  // 현재 mission에서 학생이 요청한 힌트 깊이. 0에서 시작해 최대 3까지
+  // 증가한다. 학생 능력 평가가 아니라 UI 힌트 단계 상태다.
+  hintLevel: number;
 };
+
+const MAX_HINT_LEVEL = 3;
 
 const sessions = new Map<string, CoachingSession>();
 
@@ -52,7 +57,15 @@ export function getOrCreateCoachingSession(missionId: string): CoachingSession {
     existing.updatedAt = now;
     return existing;
   }
-  const session: CoachingSession = { missionId, startedAt: now, updatedAt: now, stuckReason: null, observation: null, hypothesisFocus: null };
+  const session: CoachingSession = {
+    missionId,
+    startedAt: now,
+    updatedAt: now,
+    stuckReason: null,
+    observation: null,
+    hypothesisFocus: null,
+    hintLevel: 0,
+  };
   sessions.set(missionId, session);
   return session;
 }
@@ -85,6 +98,16 @@ export function setObservation(missionId: string, observation: ObservationChoice
 export function setHypothesisFocus(missionId: string, focus: HypothesisFocus): CoachingSession {
   const session = getOrCreateCoachingSession(missionId);
   session.hypothesisFocus = focus;
+  session.updatedAt = new Date().toISOString();
+  return session;
+}
+
+// missionId의 세션에서 hintLevel을 1 증가시킨다. MAX_HINT_LEVEL을 넘지
+// 않는다. 세션이 아직 없으면 getOrCreateCoachingSession()으로 먼저
+// 만든다. stuckReason/observation/hypothesisFocus는 건드리지 않는다.
+export function advanceHintLevel(missionId: string): CoachingSession {
+  const session = getOrCreateCoachingSession(missionId);
+  session.hintLevel = Math.min(session.hintLevel + 1, MAX_HINT_LEVEL);
   session.updatedAt = new Date().toISOString();
   return session;
 }
