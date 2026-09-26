@@ -897,3 +897,70 @@ D11-B7 수동 확인 중 발견된 별도 이슈가 있었고, D11-B7과 직접 
 
 ### Status
 CLOSED
+
+## 2026-09-26 — D11-B8 — AI Coach → Teacher Timeline Integration
+
+### Status
+CLOSED
+
+### 구현 목적
+AI Coach의 핵심 학습 과정이 학생 브라우저 내부에서만 사라지지 않고, 새 Timeline 시스템을 만들지 않고 기존 `learning_event` 파이프라인을 통해 교사가 Teacher Timeline에서 확인할 수 있도록 연결했다.
+
+### 추가된 이벤트
+
+#### coach-open
+학생이 AI 학습 코치를 열었음을 기록.
+
+Teacher Timeline 표시: `AI 학습 코치 시작`
+
+#### coach-hint
+학생이 요청한 hint level을 기록.
+
+payload: `level: 1 | 2 | 3`
+
+Teacher Timeline 예:
+- `AI 코치 힌트 요청 · 1단계`
+- `AI 코치 힌트 요청 · 2단계`
+- `AI 코치 힌트 요청 · 3단계`
+
+#### coach-retry
+학생이 retry gate에서 재시도 transition을 진행했음을 기록. 이 이벤트는 실제 Run 실행 자체를 증명하는 이벤트가 아니다.
+
+Teacher Timeline 표시: `AI 코치 재시도`
+
+#### coach-reflection
+post-retry reflection의 결과를 기록.
+
+허용 choice: `re-observe` | `resolved`
+
+Production E2E에서 확인된 예: `AI 코치 학습 성찰 · 해결됨`
+
+### Implementation
+- `src/server/learning-event-handler.ts`
+  - `ALLOWED_EVENT_TYPES`에 `coach-open`/`coach-hint`/`coach-retry`/`coach-reflection` 추가 (기존 20종 → 24종)
+  - `pickEnum` 헬퍼 추가, `coach-hint`(level/focus)·`coach-reflection`(choice) sanitizer를 고정 enum 값만 허용하도록 작성 (자유 텍스트/식별 정보 없음)
+- `src/server/teacher-timeline-data.ts`
+  - `TIMELINE_SANITIZERS`에 4개 coach-* 이벤트 매핑 추가
+- `src/ui/learning-event-sink.ts`
+  - 클라이언트 측 `ALLOWED_EVENT_TYPES`에도 동일하게 4개 추가 (서버 목록과 정확히 일치)
+- `src/ui/app.ts`
+  - AI 코치 패널을 열 때 `coach-open` 발행
+  - hint level 진행 시 `coach-hint` 발행 (level, focus)
+  - retry gate 진행 시 `coach-retry` 발행
+  - reflection에서 "다시 관찰해볼게요"/"이제 괜찮아요" 선택 시 `coach-reflection` 발행 (choice: `re-observe`/`resolved`)
+- `src/ui/teacher-app.ts`
+  - `EVENT_LABELS`에 4개 coach-* 라벨 추가
+  - `COACH_REFLECTION_CHOICE_LABELS` 추가 (`re-observe` → "다시 관찰", `resolved` → "해결됨")
+  - `describeEvent()`에 coach-hint의 level, coach-reflection의 choice를 라벨 뒤에 덧붙이는 분기 추가
+
+### Commit
+- 2e8a865 feat: add AI coach events to teacher timeline
+
+### Verification
+- Production E2E verification 완료 (coach-open/coach-hint/coach-retry/coach-reflection 각 이벤트가 Teacher Timeline에 위 표시 형식으로 확인됨)
+
+### Explicit Non-Changes
+- 새 Timeline 시스템 도입 없음 — 기존 `learning_event` 파이프라인 재사용
+- checkpoint/mission 판정 로직 변경 없음
+- coach-retry는 Run 실행 자체를 증명하지 않음 (retry gate transition만 기록)
+- Run / Real Run / Stop / Reset 변경 없음
