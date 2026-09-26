@@ -26,7 +26,7 @@
 import { isLearningEventSinkEnabled } from './learning-event-lifecycle';
 
 // 0-D9-B src/server/learning-event-handler.ts의 ALLOWED_EVENT_TYPES와
-// 정확히 같은 20종이어야 한다 — 서버가 어차피 이 목록 밖은 400으로
+// 정확히 같은 24종이어야 한다 — 서버가 어차피 이 목록 밖은 400으로
 // 거부하지만, 여기서 먼저 걸러야 불필요한 네트워크 요청 자체가 없다.
 // teacher-*(교사 조작), repl(자유 입력 PII), open/tab/copy-code/
 // download-main/project-export(낮은 교육적 가치)는 제외한다.
@@ -51,6 +51,11 @@ const ALLOWED_EVENT_TYPES = new Set([
   'real-run',
   'real-run-end',
   'real-save',
+  // D11-B8: AI Coach 학습 과정 이벤트 (coach-*)
+  'coach-open',
+  'coach-hint',
+  'coach-retry',
+  'coach-reflection',
 ]);
 
 // 큐가 가득 찼을 때 우선적으로 보존할 이벤트 — 학습 성과 판정(checkpoint)과

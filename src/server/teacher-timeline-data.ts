@@ -41,7 +41,7 @@ function pick(payload: unknown, keys: string[]): Record<string, unknown> {
   return out;
 }
 
-// learning-event-handler.ts의 ALLOWED_EVENT_TYPES(20종)와 정확히 같은
+// learning-event-handler.ts의 ALLOWED_EVENT_TYPES(24종)와 정확히 같은
 // event_type 집합을 다룬다 — 그 외 값은 이 DB에 애초에 저장될 수 없다(그
 // handler가 쓰기 시점에 이미 거부하므로). 매핑에 없는 값이 방어적으로
 // 들어와도 빈 객체로 처리한다(아래 조회 함수의 fallback).
@@ -70,6 +70,12 @@ const TIMELINE_SANITIZERS: Record<string, (payload: unknown) => Record<string, u
   'real-run': () => ({}),
   'real-run-end': (p) => pick(p, ['ok', 'error']),
   'real-save': () => ({}),
+  // D11-B8: AI Coach 학습 과정 이벤트. 저장 시점에 이미 고정 enum으로
+  // sanitize된 값만 있으므로 그대로 노출해도 안전하다.
+  'coach-open': () => ({}),
+  'coach-hint': (p) => pick(p, ['level', 'focus']),
+  'coach-retry': () => ({}),
+  'coach-reflection': (p) => pick(p, ['choice']),
 };
 
 type LearningEventRow = {

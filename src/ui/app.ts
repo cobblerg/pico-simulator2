@@ -1160,10 +1160,12 @@ aiCoachObservationBack.addEventListener('click', () => showCoachQuestion());
 // (reobserveActionLabel, "다시 관찰해볼게요")에서는 관찰 화면으로 이동한다.
 aiCoachHypothesisAction.addEventListener('click', () => {
   if (currentCoachReflectionVisible) {
+    logEvent('coach-reflection', { choice: 're-observe' });
     showCoachObservation();
     return;
   }
   if (currentCoachRetryGateVisible) {
+    logEvent('coach-retry');
     showPostRetryReflection();
     return;
   }
@@ -1184,6 +1186,7 @@ aiCoachHypothesisBack.addEventListener('click', () => {
     return;
   }
   if (currentCoachReflectionVisible) {
+    logEvent('coach-reflection', { choice: 'resolved' });
     showResolvedClosure();
     return;
   }
@@ -1193,6 +1196,7 @@ aiCoachHintMore.addEventListener('click', () => {
   const session = advanceHintLevel(mission.id);
   currentCoachHintLevel = session.hintLevel;
   showCurrentHint();
+  logEvent('coach-hint', { level: session.hintLevel, focus: currentCoachHypothesisFocus });
 });
 
 function setAiCoachPanel(open: boolean) {
@@ -1206,7 +1210,10 @@ aiCoachToggle.addEventListener('click', () => {
   // 패널을 열 때만 session을 확보한다 — 닫을 때는 세션을 만들거나 건드리지 않는다.
   // mission은 클릭 시점의 현재 값을 그대로 읽으므로, 별도의 mission 전환
   // listener 없이도 미션이 바뀐 뒤 다시 열면 그 미션의 session을 얻는다.
-  if (opening) getOrCreateCoachingSession(mission.id);
+  if (opening) {
+    getOrCreateCoachingSession(mission.id);
+    logEvent('coach-open');
+  }
   setAiCoachPanel(opening);
 });
 $('#ai-coach-close').addEventListener('click', () => setAiCoachPanel(false));

@@ -54,6 +54,11 @@ const ALLOWED_EVENT_TYPES = new Set([
   'real-run',
   'real-run-end',
   'real-save',
+  // D11-B8: AI Coach 학습 과정 이벤트 (coach-*)
+  'coach-open',
+  'coach-hint',
+  'coach-retry',
+  'coach-reflection',
 ]);
 
 // ---------- 제한값 ----------
@@ -99,6 +104,9 @@ function pickNullableNumber(obj: Record<string, unknown>, key: string): number |
 }
 function pickBoolean(obj: Record<string, unknown>, key: string): boolean | undefined {
   return isBoolean(obj[key]) ? obj[key] : undefined;
+}
+function pickEnum<T>(obj: Record<string, unknown>, key: string, allowed: readonly T[]): T | undefined {
+  return (allowed as readonly unknown[]).includes(obj[key]) ? (obj[key] as T) : undefined;
 }
 function withDefined(out: Record<string, unknown>, key: string, value: unknown): void {
   if (value !== undefined) out[key] = value;
@@ -221,6 +229,21 @@ const SANITIZERS: Record<string, (p: Record<string, unknown>) => SanitizeResult>
     return { ok: true, payload: out };
   },
   'real-save': () => ({ ok: true, payload: {} }),
+  // D11-B8: AI Coach 학습 과정 이벤트. 전부 고정 enum 값만 다루고
+  // 자유 텍스트/식별 정보는 담지 않는다.
+  'coach-open': () => ({ ok: true, payload: {} }),
+  'coach-hint': (p) => {
+    const out: Record<string, unknown> = {};
+    withDefined(out, 'level', pickEnum(p, 'level', [1, 2, 3] as const));
+    withDefined(out, 'focus', pickEnum(p, 'focus', ['code', 'wiring', 'device-behavior', 'not-sure'] as const));
+    return { ok: true, payload: out };
+  },
+  'coach-retry': () => ({ ok: true, payload: {} }),
+  'coach-reflection': (p) => {
+    const out: Record<string, unknown> = {};
+    withDefined(out, 'choice', pickEnum(p, 'choice', ['re-observe', 'resolved'] as const));
+    return { ok: true, payload: out };
+  },
 };
 
 function isValidActivityId(v: unknown): v is string {

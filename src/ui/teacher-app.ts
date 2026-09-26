@@ -254,7 +254,7 @@ type AIObservation = { text: string; evidence: string[] };
 type AIAnalysisResultUI = { summary: string; observations: AIObservation[]; suggestedFeedback: string };
 type AIAnalysisResponse = { status: 'ok'; analysis: AIAnalysisResultUI | null } | { status: 'not_approved' };
 
-// 실제로 존재하는 20개 event_type만 다룬다(learning-event-handler.ts의
+// 실제로 존재하는 24개 event_type만 다룬다(learning-event-handler.ts의
 // ALLOWED_EVENT_TYPES와 정확히 같은 집합) — 새 event type을 여기서 만들어
 // 내지 않는다. 매핑에 없는 값이 방어적으로 와도 raw event_type을 그대로
 // 보여준다(폴백일 뿐, 정상 경로에서는 발생하지 않는다).
@@ -279,13 +279,23 @@ const EVENT_LABELS: Record<string, string> = {
   'real-run': '실물에서 실행',
   'real-run-end': '실물 실행 종료',
   'real-save': '실물에 저장',
+  'coach-open': 'AI 학습 코치 시작',
+  'coach-hint': 'AI 코치 힌트 요청',
+  'coach-retry': 'AI 코치 재시도',
+  'coach-reflection': 'AI 코치 학습 성찰',
+};
+
+const COACH_REFLECTION_CHOICE_LABELS: Record<string, string> = {
+  're-observe': '다시 관찰',
+  resolved: '해결됨',
 };
 
 // checkpoint는 ok에 따라 "통과"/"미통과"만 덧붙인다 — ok:true를 "활동
 // 완료"라고 표현하지 않는다(0-D10-D design review §3에서 확인한 대로,
 // 학생이 통과 이후에도 계속 시도할 수 있어 "완료"는 현재 데이터로 확정할
 // 수 없는 의미이기 때문). error는 payload.type(예외 클래스명)이 있으면
-// 덧붙여 어떤 오류였는지 바로 알 수 있게 한다.
+// 덧붙여 어떤 오류였는지 바로 알 수 있게 한다. coach-hint/coach-reflection도
+// 같은 패턴으로 payload의 level/choice를 라벨 뒤에 덧붙인다.
 function describeEvent(ev: TimelineEvent): string {
   const label = EVENT_LABELS[ev.eventType] ?? ev.eventType;
   const payload = (ev.payload && typeof ev.payload === 'object' ? ev.payload : {}) as Record<string, unknown>;
@@ -294,6 +304,13 @@ function describeEvent(ev: TimelineEvent): string {
   }
   if (ev.eventType === 'error' && typeof payload.type === 'string' && payload.type.length > 0) {
     return `${label} · ${payload.type}`;
+  }
+  if (ev.eventType === 'coach-hint' && typeof payload.level === 'number') {
+    return `${label} · ${payload.level}단계`;
+  }
+  if (ev.eventType === 'coach-reflection' && typeof payload.choice === 'string') {
+    const choiceLabel = COACH_REFLECTION_CHOICE_LABELS[payload.choice];
+    if (choiceLabel) return `${label} · ${choiceLabel}`;
   }
   return label;
 }
