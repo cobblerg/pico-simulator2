@@ -720,3 +720,90 @@ Flow:
 
 ### Notes
 D11-B6 intentionally does not detect Run or Real Run completion. The reflection step is a soft post-retry prompt that helps students decide whether to observe again or continue. Passive picosim:event-based Run detection remains a possible future enhancement but was not included in this stage.
+
+## 2026-09-26 — BUG-StudentEntry-LocalState-01/02 Previous Local State Exposure
+
+### Status
+CLOSED
+
+### BUG-StudentEntry-LocalState-01
+
+**Problem**
+After a refresh, the student entry dialog reappeared, but the previous local simulator state (mission selection, completed checkmarks, code, board/console UI) remained visible behind it.
+
+**Root Cause**
+- `initStudentEntryGate()` opens the student entry `<dialog>` with `showModal()`, but this is non-blocking — the rest of app.ts's boot sequence keeps running immediately afterward.
+- app.ts reads `picosim:mission` / `picosim:ws:<missionId>` / `picosim:passed` from localStorage and renders the editor, board, and mission list right away, regardless of whether the entry gate has been passed.
+- The existing `.proj-dialog::backdrop` rule used a semi-transparent background (`rgba(10, 20, 14, 0.45)`), so the already-rendered previous state showed through behind the dialog.
+- No server-side data exposure (learning_event / student_session / Supabase) was found — this was a client-side visual exposure of localStorage-backed state only.
+
+**Solution**
+- Added `#student-entry-dialog::backdrop { background: var(--surface-2); }` in `src/ui/styles.css`.
+- The ID selector applies only to the student entry dialog, leaving the existing `#proj-dialog` (project save/load dialog) backdrop untouched and still semi-transparent.
+- No JS/localStorage/workspace/session logic was changed.
+
+**Commit**
+- 43d9652 fix: hide app backdrop during student entry
+
+**Deployment**
+- Production URL: https://pico-simulator2.vercel.app
+- Vercel deployment: success
+- GitHub push: success
+
+**Manual Production Verification**
+Result: PASS
+
+Checked:
+- Student entry dialog no longer shows the previous simulator screen behind it.
+- No new browser Console errors.
+- Project save/load dialog backdrop remained semi-transparent as before.
+
+### BUG-StudentEntry-LocalState-02
+
+**Problem**
+Even after BUG-01 hid the visual exposure, the underlying local workspace itself was not reset when a different student entered. `picosim:mission`, `picosim:passed`, and `picosim:ws:<missionId>` are stored in localStorage without any per-student namespace. The existing reset (`resetWorkspaceForNextStudent()`) only ran on the "나가기"(exit)/"다시입장" flow. If a student left without clicking "나가기" (closing the tab/browser), the next student entering on the same browser could still inherit the previous student's local workspace.
+
+**Policy**
+- Same student re-entering / refreshing / resuming an existing session → keep the existing local workspace.
+- A different student entering → reset the previous local workspace.
+
+**Solution**
+- Added an owner-key comparison in `src/ui/student-entry-ui.ts`, using `StudentContext.studentId` as the owner key.
+- Stored as `picosim:last-student-key` via the existing `project.ts` `store` (no new storage mechanism introduced).
+- No owner key recorded yet → do not reset; just record the current studentId.
+- Same owner key as before → do not reset, do not reload.
+- Different owner key → `disableWorkspaceAutosave()` → `resetWorkspaceForNextStudent()` (existing function, reused as-is) → update the owner key → `location.reload()`, so app.ts re-reads the now-clean localStorage from a fresh boot.
+- `resetWorkspaceIfStudentChanged()` is only invoked inside the `accepted` branch of the entry form's submit handler — never on entry failure or network error.
+- The "나가기"/"다시입장" flow was left unmodified; it does not clear the owner key, which remains as the comparison baseline for the next entry.
+
+**Commit**
+- fed8cf0 fix: reset workspace when student changes
+
+**Deployment**
+- Production URL: https://pico-simulator2.vercel.app
+- Vercel deployment: success
+- GitHub push: success
+
+**Manual Production Verification**
+Result: PASS
+
+Checked:
+- A second test student (B) was added for verification.
+- Student A's workspace persisted across refresh/re-entry as the same student.
+- Student B entering after A (without A using "나가기") triggered a reset and reload, clearing A's code/board/passed/mission state.
+- Student B's own workspace persisted across refresh/re-entry as the same student.
+- No new browser Console errors.
+
+### Explicit Non-Changes (both BUG-01 and BUG-02)
+- No server / Supabase / OpenAI change.
+- No student_session server logic change.
+- No learning_event / logEvent change.
+- No Run / Real Run change.
+- No Stop / Reset change.
+- No AI Coach change.
+- No change to the picosim:ws:<missionId> storage structure itself.
+- No project-wide student-identity-based localStorage namespace introduced.
+
+### Known Limitations
+- On first rollout, a browser with no owner key recorded yet will not reset on the very first entry after this fix ships, so previously-existing local state may still be visible once.
+- Multiple tabs on the same browser share the same localStorage: a student switch detected in one tab can reset workspace data that another tab is still using. This is a structural property of the current single-namespace localStorage design and was intentionally left out of scope for BUG-01/02.
