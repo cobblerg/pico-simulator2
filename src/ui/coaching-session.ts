@@ -24,11 +24,21 @@
 // 따른다.
 export type StuckReason = 'goal-unclear' | 'first-step-unclear' | 'tried-not-working' | 'result-unclear';
 
+// ObservationChoice: 학생이 실행 결과를 보고 자기보고하는 관찰 상태.
+// 능력 평가 값이 아니라 "무엇을 보았는지"를 나타낸다.
+export type ObservationChoice = 'no-change' | 'error-message' | 'unexpected-behavior' | 'not-sure';
+
+// HypothesisFocus: 학생이 다음에 확인해 보고 싶다고 고른 초점.
+// 원인 진단이 아니라 "어디를 먼저 볼지"를 나타낸다.
+export type HypothesisFocus = 'code' | 'wiring' | 'device-behavior' | 'not-sure';
+
 export type CoachingSession = {
   missionId: string;
   startedAt: string;
   updatedAt: string;
   stuckReason: StuckReason | null;
+  observation: ObservationChoice | null;
+  hypothesisFocus: HypothesisFocus | null;
 };
 
 const sessions = new Map<string, CoachingSession>();
@@ -42,7 +52,7 @@ export function getOrCreateCoachingSession(missionId: string): CoachingSession {
     existing.updatedAt = now;
     return existing;
   }
-  const session: CoachingSession = { missionId, startedAt: now, updatedAt: now, stuckReason: null };
+  const session: CoachingSession = { missionId, startedAt: now, updatedAt: now, stuckReason: null, observation: null, hypothesisFocus: null };
   sessions.set(missionId, session);
   return session;
 }
@@ -54,6 +64,27 @@ export function getOrCreateCoachingSession(missionId: string): CoachingSession {
 export function setStuckReason(missionId: string, reason: StuckReason): CoachingSession {
   const session = getOrCreateCoachingSession(missionId);
   session.stuckReason = reason;
+  session.updatedAt = new Date().toISOString();
+  return session;
+}
+
+// missionId의 세션에 학생이 고른 ObservationChoice를 기록한다. 세션이
+// 아직 없으면 getOrCreateCoachingSession()으로 먼저 만든다. student
+// identity는 이 함수의 인자/반환값 어디에도 없다.
+export function setObservation(missionId: string, observation: ObservationChoice): CoachingSession {
+  const session = getOrCreateCoachingSession(missionId);
+  session.observation = observation;
+  session.updatedAt = new Date().toISOString();
+  return session;
+}
+
+// missionId의 세션에 학생이 고른 HypothesisFocus를 기록한다. 세션이
+// 아직 없으면 getOrCreateCoachingSession()으로 먼저 만든다. 학생이 적은
+// 가설 문장이나 원인 진단은 담지 않는다 — 다음에 확인해 보고 싶은
+// 초점만 담는다.
+export function setHypothesisFocus(missionId: string, focus: HypothesisFocus): CoachingSession {
+  const session = getOrCreateCoachingSession(missionId);
+  session.hypothesisFocus = focus;
   session.updatedAt = new Date().toISOString();
   return session;
 }

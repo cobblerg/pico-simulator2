@@ -17,8 +17,9 @@ import {
 import { initStudentEntryGate } from './student-entry-ui';
 import { isWorkspaceAutosaveEnabled } from './workspace-autosave';
 import { initLearningEventSink } from './learning-event-sink';
-import { getOrCreateCoachingSession, setStuckReason, type StuckReason } from './coaching-session';
+import { getOrCreateCoachingSession, setHypothesisFocus, setObservation, setStuckReason, type StuckReason, type ObservationChoice, type HypothesisFocus } from './coaching-session';
 import { COACHING_SCAFFOLDS, getCoachingScaffold } from './coaching-scaffold';
+import { OBSERVATION_SCAFFOLDS, HYPOTHESIS_FOCUS_SCAFFOLDS, getObservationScaffold, getHypothesisFocusScaffold } from './coaching-observation';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -901,7 +902,7 @@ $('#repl-form').addEventListener('submit', (e) => {
   inp.value = '';
 });
 
-// ---------- AI 학습 코치 (막힌 지점 선택 UI, Stage D11-B2-C) ----------
+// ---------- AI 학습 코치 (막힌 지점 선택, 관찰, 가설 초점 UI) ----------
 // mission은 이 파일 상단(58번째 줄 부근)에서 항상 유효한 Mission으로 초기화되고
 // openMission()이 미션을 바꿀 때도 항상 유효한 값으로만 재할당한다 — 이 버튼이
 // 클릭 가능한 시점에 mission이 없는 경우는 현재 구조상 존재하지 않는다. 그래서
@@ -914,16 +915,50 @@ const aiCoachScaffold = $('#ai-coach-scaffold');
 const aiCoachScaffoldMessage = $('#ai-coach-scaffold-message');
 const aiCoachAction = $('#ai-coach-action');
 const aiCoachBack = $('#ai-coach-back');
+const aiCoachObservation = $('#ai-coach-observation');
+const aiCoachObservationList = $('#ai-coach-observation-list');
+const aiCoachObservationMessage = $('#ai-coach-observation-message');
+const aiCoachObservationAction = $('#ai-coach-observation-action');
+const aiCoachObservationBack = $('#ai-coach-observation-back');
+const aiCoachHypothesis = $('#ai-coach-hypothesis');
+const aiCoachHypothesisList = $('#ai-coach-hypothesis-list');
+const aiCoachHypothesisMessage = $('#ai-coach-hypothesis-message');
+const aiCoachHypothesisAction = $('#ai-coach-hypothesis-action');
+const aiCoachHypothesisBack = $('#ai-coach-hypothesis-back');
 
-// 질문 화면/스캐폴드 화면 사이의 전환에만 쓰이는 local UI state다.
-// CoachingSession에는 저장하지 않는다 — 패널을 닫았다 다시 열면 항상
-// 질문 화면부터 다시 시작한다(setAiCoachPanel 참고).
+// 화면 전환에만 쓰이는 local UI state다. CoachingSession에는 저장하지
+// 않는다 — 패널을 닫았다 다시 열면 항상 질문 화면부터 다시 시작한다
+// (setAiCoachPanel 참고).
 let currentCoachReason: StuckReason | null = null;
+let currentCoachObservation: ObservationChoice | null = null;
+let currentCoachHypothesisFocus: HypothesisFocus | null = null;
+
+// 관찰/가설 화면을 "선택지 목록만 보이는 초기 상태"로 되돌린다.
+function resetCoachObservation() {
+  currentCoachObservation = null;
+  aiCoachObservationList.hidden = false;
+  aiCoachObservationMessage.hidden = true;
+  aiCoachObservationMessage.textContent = '';
+  aiCoachObservationAction.hidden = true;
+  aiCoachObservationAction.textContent = '';
+}
+function resetCoachHypothesis() {
+  currentCoachHypothesisFocus = null;
+  aiCoachHypothesisList.hidden = false;
+  aiCoachHypothesisMessage.hidden = true;
+  aiCoachHypothesisMessage.textContent = '';
+  aiCoachHypothesisAction.hidden = true;
+  aiCoachHypothesisAction.textContent = '';
+}
 
 function showCoachQuestion() {
   currentCoachReason = null;
   aiCoachScaffold.hidden = true;
+  aiCoachObservation.hidden = true;
+  aiCoachHypothesis.hidden = true;
   aiCoachQuestion.hidden = false;
+  resetCoachObservation();
+  resetCoachHypothesis();
 }
 function showCoachScaffold(reason: StuckReason) {
   currentCoachReason = reason;
@@ -937,11 +972,23 @@ function showCoachScaffold(reason: StuckReason) {
   aiCoachQuestion.hidden = true;
   aiCoachScaffold.hidden = false;
 }
-// 선택지 버튼은 index.html에 하드코딩하지 않고 COACHING_SCAFFOLDS(source of
+function showCoachObservation() {
+  aiCoachQuestion.hidden = true;
+  aiCoachScaffold.hidden = true;
+  aiCoachHypothesis.hidden = true;
+  aiCoachObservation.hidden = false;
+  resetCoachObservation();
+}
+function showCoachHypothesis() {
+  aiCoachQuestion.hidden = true;
+  aiCoachScaffold.hidden = true;
+  aiCoachObservation.hidden = true;
+  aiCoachHypothesis.hidden = false;
+  resetCoachHypothesis();
+}
+// 선택지 버튼은 index.html에 하드코딩하지 않고 각 콘텐츠 모듈(source of
 // truth)에서 한 번만 렌더링한다. 문자열 키 객체의 own enumerable key는
-// 선언 순서를 그대로 보존하므로, coaching-scaffold.ts에 적힌 4개 순서
-// (goal-unclear → first-step-unclear → tried-not-working → result-unclear)
-// 그대로 표시된다.
+// 선언 순서를 그대로 보존하므로, 각 모듈에 적힌 순서 그대로 표시된다.
 (Object.keys(COACHING_SCAFFOLDS) as StuckReason[]).forEach((reason) => {
   const b = document.createElement('button');
   b.type = 'button';
@@ -950,10 +997,53 @@ function showCoachScaffold(reason: StuckReason) {
   b.addEventListener('click', () => showCoachScaffold(reason));
   aiCoachReasonList.appendChild(b);
 });
-// 행동 버튼(actionLabel)과 "다른 이유 고르기" 모두 질문 화면으로 돌아갈 뿐,
-// 여기서 추가 문구를 이어서 보여주지 않는다.
-aiCoachAction.addEventListener('click', () => showCoachQuestion());
+(Object.keys(OBSERVATION_SCAFFOLDS) as ObservationChoice[]).forEach((choice) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn ghost small';
+  b.textContent = OBSERVATION_SCAFFOLDS[choice].label;
+  b.addEventListener('click', () => {
+    currentCoachObservation = choice;
+    setObservation(mission.id, choice);
+    const s = getObservationScaffold(choice);
+    aiCoachObservationMessage.textContent = s.guidanceMessage;
+    aiCoachObservationMessage.hidden = false;
+    aiCoachObservationAction.textContent = s.actionLabel;
+    aiCoachObservationAction.hidden = false;
+    aiCoachObservationList.hidden = true;
+  });
+  aiCoachObservationList.appendChild(b);
+});
+(Object.keys(HYPOTHESIS_FOCUS_SCAFFOLDS) as HypothesisFocus[]).forEach((focus) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn ghost small';
+  b.textContent = HYPOTHESIS_FOCUS_SCAFFOLDS[focus].label;
+  b.addEventListener('click', () => {
+    currentCoachHypothesisFocus = focus;
+    setHypothesisFocus(mission.id, focus);
+    const s = getHypothesisFocusScaffold(focus);
+    aiCoachHypothesisMessage.textContent = s.guidanceMessage;
+    aiCoachHypothesisMessage.hidden = false;
+    aiCoachHypothesisAction.textContent = s.actionLabel;
+    aiCoachHypothesisAction.hidden = false;
+    aiCoachHypothesisList.hidden = true;
+  });
+  aiCoachHypothesisList.appendChild(b);
+});
+// 행동 버튼(actionLabel)은 stuckReason에 따라 다음 화면으로 이어진다 —
+// tried-not-working/result-unclear는 관찰 화면으로, 그 외에는 질문
+// 화면으로 돌아간다. "다른 이유 고르기"는 어느 화면에서든 항상 질문
+// 화면으로 돌아간다.
+aiCoachAction.addEventListener('click', () => {
+  if (currentCoachReason === 'tried-not-working' || currentCoachReason === 'result-unclear') showCoachObservation();
+  else showCoachQuestion();
+});
 aiCoachBack.addEventListener('click', () => showCoachQuestion());
+aiCoachObservationAction.addEventListener('click', () => showCoachHypothesis());
+aiCoachObservationBack.addEventListener('click', () => showCoachQuestion());
+aiCoachHypothesisAction.addEventListener('click', () => showCoachQuestion());
+aiCoachHypothesisBack.addEventListener('click', () => showCoachQuestion());
 
 function setAiCoachPanel(open: boolean) {
   aiCoachPanel.hidden = !open;
