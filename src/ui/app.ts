@@ -17,6 +17,7 @@ import {
 import { initStudentEntryGate } from './student-entry-ui';
 import { isWorkspaceAutosaveEnabled } from './workspace-autosave';
 import { initLearningEventSink } from './learning-event-sink';
+import { getOrCreateCoachingSession } from './coaching-session';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -898,6 +899,27 @@ $('#repl-form').addEventListener('submit', (e) => {
   logEvent('repl', { line: inp.value });
   inp.value = '';
 });
+
+// ---------- AI 학습 코치 (D11-B1-C: 패널을 여는 시점에만 현재 mission의 CoachingSession을 확보) ----------
+// mission은 이 파일 상단(58번째 줄 부근)에서 항상 유효한 Mission으로 초기화되고
+// openMission()이 미션을 바꿀 때도 항상 유효한 값으로만 재할당한다 — 이 버튼이
+// 클릭 가능한 시점에 mission이 없는 경우는 현재 구조상 존재하지 않는다. 그래서
+// 여기서 별도의 "mission 없음" 방어 UI를 추가하지 않는다.
+const aiCoachToggle = $('#ai-coach-toggle');
+const aiCoachPanel = $('#ai-coach-panel');
+function setAiCoachPanel(open: boolean) {
+  aiCoachPanel.hidden = !open;
+  aiCoachToggle.setAttribute('aria-expanded', String(open));
+}
+aiCoachToggle.addEventListener('click', () => {
+  const opening = aiCoachPanel.hidden;
+  // 패널을 열 때만 session을 확보한다 — 닫을 때는 세션을 만들거나 건드리지 않는다.
+  // mission은 클릭 시점의 현재 값을 그대로 읽으므로, 별도의 mission 전환
+  // listener 없이도 미션이 바뀐 뒤 다시 열면 그 미션의 session을 얻는다.
+  if (opening) getOrCreateCoachingSession(mission.id);
+  setAiCoachPanel(opening);
+});
+$('#ai-coach-close').addEventListener('click', () => setAiCoachPanel(false));
 
 // ---------- 탭 ----------
 function setTab(t: 'sim' | 'bridge') {

@@ -163,6 +163,16 @@
           <button id="reset" class="btn ghost" type="button" title="전원을 뽑았다 꽂는 것과 같아요">↺ 리셋</button>
         </div>
       </div>
+      <div class="ai-coach-bar">
+        <button id="ai-coach-toggle" class="btn ghost small ai-coach-btn" type="button" aria-expanded="false" aria-controls="ai-coach-panel">AI 학습 코치</button>
+      </div>
+      <aside id="ai-coach-panel" class="ai-coach-panel" hidden aria-labelledby="ai-coach-title">
+        <div class="ai-coach-head">
+          <h3 id="ai-coach-title">AI 학습 코치</h3>
+          <button id="ai-coach-close" class="btn ghost small" type="button" aria-label="AI 학습 코치 패널 닫기">닫기</button>
+        </div>
+        <p class="ai-coach-desc">AI 학습 코치는 정답을 대신 만들어 주지 않습니다. 여러분이 다음 생각을 스스로 이어갈 수 있도록 도와줍니다.</p>
+      </aside>
       <div id="check" class="check" hidden></div>
       <div id="editor" class="editor"></div>
       <div class="shell-head">
