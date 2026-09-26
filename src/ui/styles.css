@@ -333,6 +333,7 @@ td b { font-family: var(--mono); font-weight: 500; }
 .palette-empty { font-size: 13px; color: var(--muted); padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; grid-column: 1 / -1; }
 .proj-dialog { border: 1px solid var(--line); border-radius: 12px; padding: 18px; width: min(520px, calc(100vw - 32px)); background: var(--surface); color: var(--ink); box-shadow: 0 20px 60px rgba(0,0,0,0.25); }
 .proj-dialog::backdrop { background: rgba(10, 20, 14, 0.45); }
+#student-entry-dialog::backdrop { background: var(--surface-2); }
 .proj-dialog h2 { font: 20px var(--display); margin-bottom: 10px; }
 .pd-save { display: flex; flex-direction: column; gap: 6px; }
 .pd-save .row { flex-wrap: nowrap; }
