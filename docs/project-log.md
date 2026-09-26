@@ -243,3 +243,87 @@ Disposition:
 
 ### Notes
 D11-B3 intentionally remains client-side and in-memory only. The selected observation and hypothesisFocus are saved only in the mission-scoped CoachingSession and are not written to Supabase or learning_event. Teacher Timeline integration and persistent learning records are deferred to later stages.
+
+## 2026-09-26 — BUG-ResultMessage-01-A Mission 3/4 Final Result Message Fallback
+
+### Status
+CLOSED
+
+### Commit
+- commit: b64e4c9243b0c5c9383395185d0ef0239ec916dd
+- short hash: b64e4c9
+- message: fix: add final result fallback for m3 and m4
+
+### Deployment
+- Production URL: https://pico-simulator2.vercel.app
+- Vercel deployment: success
+- GitHub push: success
+- origin/main: 8047c43 → b64e4c9
+
+### Problem
+During D11-B3 manual Production verification, some mission result messages were not reliably shown after stopping execution.
+
+Affected missions reported:
+- Mission 3: 버튼으로 LED 켜기
+- Mission 4: 가변저항 값 읽기
+- Mission 6: 서보 각도 바꾸기
+
+### Root Cause
+- Mission 3 and Mission 4 used live checkpoints but did not have checkAtEnd() fallback branches.
+- These missions are while True style missions, so students usually end execution by pressing Stop.
+- When Stop ends execution, checkAtEnd(true) is called.
+- Before this fix, checkAtEnd() did not re-check m3/m4, so a final pass/fail result message was not guaranteed.
+- Mission 6 already had a checkAtEnd() branch; static analysis did not identify the same structural issue for m6.
+
+### Completed Scope
+- Added checkAtEnd() fallback handling for Mission 3.
+- Added checkAtEnd() fallback handling for Mission 4.
+- Reused the existing checkLive() + showCheck fallback pattern used by existing missions.
+- Updated the checkLive() guard so m3/m4 can be re-evaluated after execution has stopped.
+- Kept Mission 6 logic unchanged.
+- Kept checkpoint evaluator logic unchanged.
+- Kept mission data unchanged.
+
+### Added Failure Messages
+Mission 3:
+- 버튼을 누르고 있는 동안 LED가 켜지고, 떼면 꺼지는지 확인해 보세요.
+
+Mission 4:
+- 콘솔에 가변저항 값이 바뀌어 출력되는지 확인해 보세요.
+
+### Explicit Non-Changes
+- No AI Coach change.
+- No src/index.html change.
+- No src/ui/styles.css change.
+- No checkpoint evaluator change.
+- No mission data change.
+- No m6-specific logic change.
+- No OpenAI API call.
+- No Supabase change.
+- No learning_event structure change.
+- No student_session change.
+- No server API change.
+- No editor.get() change.
+
+### Verification Completed
+- app.ts strict type-check completed.
+- checkpoint evaluator type-check completed.
+- Student build artifacts generated successfully.
+- Vercel Production deployment completed successfully.
+- Production HTML/JS bundle contains the new m3/m4 failure messages.
+- HTTP 200 OK confirmed for Production page.
+- Manual Production verification completed by the user.
+
+### Manual Production Verification
+Result: PASS
+
+Checked:
+- Mission 3 result guidance now appears correctly after Stop.
+- Mission 4 result guidance now appears correctly after Stop.
+- Mission 6 existing result guidance still appears correctly.
+- Run / Stop / Reset worked normally.
+- No new browser Console errors were reported.
+- AI Coach flow remained normal.
+
+### Notes
+This bug was discovered during D11-B3 manual verification but was not caused by D11-B3. It was an existing mission result-message fallback issue in the checkpoint display flow.
