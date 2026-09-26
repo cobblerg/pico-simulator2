@@ -3,7 +3,7 @@
 ## 2026-09-26 — D11-B1 Student AI Coaching Foundation
 
 ### Status
-DEPLOYED — Manual Production UI Check Pending
+CLOSED
 
 ### Commit
 - commit: bbee6e8723b6cf2d9d442a4dff89984f81bd700f
@@ -43,15 +43,16 @@ DEPLOYED — Manual Production UI Check Pending
 - Production HTML contains AI Coach-related strings.
 - HTTP 200 OK confirmed for Production page.
 
-### Manual Verification Pending
-The following must still be checked directly in the Production browser:
+### Manual Production Verification
+Result: PASS
 
-- Student entry succeeds.
-- AI 학습 코치 button is visible in the simulator screen.
-- Coach panel opens and closes.
-- Mission switching does not break the AI Coach UI.
-- Run / Stop / Reset still work.
-- Browser Console has no new JavaScript errors.
+Checked:
+- Student entry succeeded.
+- AI 학습 코치 button was visible in the simulator screen.
+- Coach panel opened and closed correctly.
+- Mission switching worked.
+- Run / Stop / Reset worked normally.
+- No new browser Console errors were observed.
 
 ### Notes
 Local `npm start` serves static files only, so `/api/student-entry` returns 404 locally. This is not related to D11-B1. Full student-entry verification requires Vercel Production or a Vercel dev environment with the required server-side environment variables.
