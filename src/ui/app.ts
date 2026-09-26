@@ -938,6 +938,9 @@ const aiCoachHintMore = $('#ai-coach-hint-more');
 // #ai-coach-hypothesis-back의 기본 문구다. retry gate가 이 버튼을 잠시
 // secondaryActionLabel로 바꿔 쓰므로, 원래 문구로 되돌릴 때 이 상수를 쓴다.
 const HYPOTHESIS_BACK_LABEL = '다른 이유 고르기';
+// resolved closure 상태에서 #ai-coach-hypothesis-back에 쓰는 문구다.
+// 네비게이션 역할만 하며 패널을 닫지 않는다 — 질문 화면으로 돌아갈 뿐이다.
+const RESOLVED_CLOSURE_BACK_LABEL = '질문 화면으로 돌아가기';
 
 // 화면 전환에만 쓰이는 local UI state다. CoachingSession에는 저장하지
 // 않는다 — 패널을 닫았다 다시 열면 항상 질문 화면부터 다시 시작한다
@@ -954,6 +957,10 @@ let currentCoachRetryGateVisible = false;
 // retry gate의 행동 버튼을 누른 뒤 post-retry reflection 갈림길이 보이는
 // 중인지를 나타내는 local UI state다. CoachingSession에는 저장하지 않는다.
 let currentCoachReflectionVisible = false;
+// reflection의 "이제 괜찮아요"를 누른 뒤 resolved closure 안내가 보이는
+// 중인지를 나타내는 local UI state다. 학생 자기보고 이후의 짧은 안내일
+// 뿐, checkpoint pass가 아니다. CoachingSession에는 저장하지 않는다.
+let currentCoachResolvedClosureVisible = false;
 
 // 관찰/가설 화면을 "선택지 목록만 보이는 초기 상태"로 되돌린다.
 function resetCoachObservation() {
@@ -969,6 +976,7 @@ function resetCoachHypothesis() {
   currentCoachHintLevel = 0;
   currentCoachRetryGateVisible = false;
   currentCoachReflectionVisible = false;
+  currentCoachResolvedClosureVisible = false;
   aiCoachHypothesisList.hidden = false;
   aiCoachHypothesisMessage.hidden = true;
   aiCoachHypothesisMessage.textContent = '';
@@ -1026,6 +1034,21 @@ function showPostRetryReflection() {
   aiCoachHypothesisAction.hidden = false;
   aiCoachHintMore.hidden = true;
   aiCoachHypothesisBack.textContent = reflection.resolvedActionLabel;
+}
+// reflection의 "이제 괜찮아요"를 누른 뒤 보여주는 짧은 안내다. 새 화면을
+// 만들지 않고 기존 hypothesis message/back 영역을 그대로 재사용한다 —
+// action/더 힌트 버튼은 이 단계에서 더 진행할 것이 없으므로 숨긴다.
+// 학생 자기보고 이후의 안내일 뿐 checkpoint pass가 아니다.
+function showResolvedClosure() {
+  const reflection = getPostRetryReflectionPrompt();
+  currentCoachResolvedClosureVisible = true;
+  currentCoachReflectionVisible = false;
+  currentCoachRetryGateVisible = false;
+  aiCoachHypothesisMessage.textContent = reflection.resolvedMessage;
+  aiCoachHypothesisMessage.hidden = false;
+  aiCoachHypothesisAction.hidden = true;
+  aiCoachHintMore.hidden = true;
+  aiCoachHypothesisBack.textContent = RESOLVED_CLOSURE_BACK_LABEL;
 }
 
 function showCoachQuestion() {
@@ -1109,9 +1132,11 @@ function showCoachHypothesis() {
     // B3 guidanceMessage를 그대로 두고, "더 힌트가 필요해요" 버튼만 드러낸다.
     currentCoachHintLevel = 0;
     aiCoachHintMore.hidden = false;
-    // 이전에 retry gate/reflection을 봤더라도 새로 focus를 고르면 처음부터 다시 시작한다.
+    // 이전에 retry gate/reflection/resolved closure를 봤더라도 새로 focus를
+    // 고르면 처음부터 다시 시작한다.
     currentCoachRetryGateVisible = false;
     currentCoachReflectionVisible = false;
+    currentCoachResolvedClosureVisible = false;
     aiCoachHypothesisBack.textContent = HYPOTHESIS_BACK_LABEL;
   });
   aiCoachHypothesisList.appendChild(b);
@@ -1148,7 +1173,22 @@ aiCoachHypothesisAction.addEventListener('click', () => {
   }
   showCoachQuestion();
 });
-aiCoachHypothesisBack.addEventListener('click', () => showCoachQuestion());
+// retry gate 상태("돌아갈게요")와 일반 상태("다른 이유 고르기")의 back
+// 버튼은 곧장 질문 화면으로 돌아간다. reflection 상태("이제 괜찮아요")의
+// back 버튼은 대신 resolved closure 안내를 한 번 보여준다. resolved
+// closure 상태("질문 화면으로 돌아가기")의 back 버튼은 질문 화면으로
+// 돌아간다.
+aiCoachHypothesisBack.addEventListener('click', () => {
+  if (currentCoachResolvedClosureVisible) {
+    showCoachQuestion();
+    return;
+  }
+  if (currentCoachReflectionVisible) {
+    showResolvedClosure();
+    return;
+  }
+  showCoachQuestion();
+});
 aiCoachHintMore.addEventListener('click', () => {
   const session = advanceHintLevel(mission.id);
   currentCoachHintLevel = session.hintLevel;
