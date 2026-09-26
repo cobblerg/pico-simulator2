@@ -17,7 +17,8 @@ import {
 import { initStudentEntryGate } from './student-entry-ui';
 import { isWorkspaceAutosaveEnabled } from './workspace-autosave';
 import { initLearningEventSink } from './learning-event-sink';
-import { getOrCreateCoachingSession } from './coaching-session';
+import { getOrCreateCoachingSession, setStuckReason, type StuckReason } from './coaching-session';
+import { COACHING_SCAFFOLDS, getCoachingScaffold } from './coaching-scaffold';
 
 declare const __UF2_B64__: string;
 declare const __FW_VERSION__: string;
@@ -900,19 +901,68 @@ $('#repl-form').addEventListener('submit', (e) => {
   inp.value = '';
 });
 
-// ---------- AI 학습 코치 (D11-B1-C: 패널을 여는 시점에만 현재 mission의 CoachingSession을 확보) ----------
+// ---------- AI 학습 코치 (막힌 지점 선택 UI, Stage D11-B2-C) ----------
 // mission은 이 파일 상단(58번째 줄 부근)에서 항상 유효한 Mission으로 초기화되고
 // openMission()이 미션을 바꿀 때도 항상 유효한 값으로만 재할당한다 — 이 버튼이
 // 클릭 가능한 시점에 mission이 없는 경우는 현재 구조상 존재하지 않는다. 그래서
 // 여기서 별도의 "mission 없음" 방어 UI를 추가하지 않는다.
 const aiCoachToggle = $('#ai-coach-toggle');
 const aiCoachPanel = $('#ai-coach-panel');
+const aiCoachQuestion = $('#ai-coach-question');
+const aiCoachReasonList = $('#ai-coach-reason-list');
+const aiCoachScaffold = $('#ai-coach-scaffold');
+const aiCoachScaffoldMessage = $('#ai-coach-scaffold-message');
+const aiCoachAction = $('#ai-coach-action');
+const aiCoachBack = $('#ai-coach-back');
+
+// 질문 화면/스캐폴드 화면 사이의 전환에만 쓰이는 local UI state다.
+// CoachingSession에는 저장하지 않는다 — 패널을 닫았다 다시 열면 항상
+// 질문 화면부터 다시 시작한다(setAiCoachPanel 참고).
+let currentCoachReason: StuckReason | null = null;
+
+function showCoachQuestion() {
+  currentCoachReason = null;
+  aiCoachScaffold.hidden = true;
+  aiCoachQuestion.hidden = false;
+}
+function showCoachScaffold(reason: StuckReason) {
+  currentCoachReason = reason;
+  // 학생이 선택지를 클릭한 시점에만 저장한다 — 행동 버튼/다른 이유 고르기/
+  // 패널 닫기/다시 열기에서는 호출하지 않는다. mission은 클릭 시점의 현재
+  // 값을 그대로 읽으므로 별도 mission 전환 listener가 필요 없다.
+  setStuckReason(mission.id, reason);
+  const s = getCoachingScaffold(reason);
+  aiCoachScaffoldMessage.textContent = s.scaffoldMessage;
+  aiCoachAction.textContent = s.actionLabel;
+  aiCoachQuestion.hidden = true;
+  aiCoachScaffold.hidden = false;
+}
+// 선택지 버튼은 index.html에 하드코딩하지 않고 COACHING_SCAFFOLDS(source of
+// truth)에서 한 번만 렌더링한다. 문자열 키 객체의 own enumerable key는
+// 선언 순서를 그대로 보존하므로, coaching-scaffold.ts에 적힌 4개 순서
+// (goal-unclear → first-step-unclear → tried-not-working → result-unclear)
+// 그대로 표시된다.
+(Object.keys(COACHING_SCAFFOLDS) as StuckReason[]).forEach((reason) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn ghost small';
+  b.textContent = COACHING_SCAFFOLDS[reason].label;
+  b.addEventListener('click', () => showCoachScaffold(reason));
+  aiCoachReasonList.appendChild(b);
+});
+// 행동 버튼(actionLabel)과 "다른 이유 고르기" 모두 질문 화면으로 돌아갈 뿐,
+// 여기서 추가 문구를 이어서 보여주지 않는다.
+aiCoachAction.addEventListener('click', () => showCoachQuestion());
+aiCoachBack.addEventListener('click', () => showCoachQuestion());
+
 function setAiCoachPanel(open: boolean) {
   aiCoachPanel.hidden = !open;
   aiCoachToggle.setAttribute('aria-expanded', String(open));
+  if (open) showCoachQuestion(); // 다시 열면 항상 질문 화면부터 시작
 }
 aiCoachToggle.addEventListener('click', () => {
-  const opening = aiCoachPanel.hidden;
+  // hidden은 boolean | "until-found"로 잡힐 수 있으므로 명시적으로 boolean화한다.
+  const opening = Boolean(aiCoachPanel.hidden);
   // 패널을 열 때만 session을 확보한다 — 닫을 때는 세션을 만들거나 건드리지 않는다.
   // mission은 클릭 시점의 현재 값을 그대로 읽으므로, 별도의 mission 전환
   // listener 없이도 미션이 바뀐 뒤 다시 열면 그 미션의 session을 얻는다.

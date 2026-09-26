@@ -172,6 +172,17 @@
           <button id="ai-coach-close" class="btn ghost small" type="button" aria-label="AI 학습 코치 패널 닫기">닫기</button>
         </div>
         <p class="ai-coach-desc">AI 학습 코치는 정답을 대신 만들어 주지 않습니다. 여러분이 다음 생각을 스스로 이어갈 수 있도록 도와줍니다.</p>
+        <div id="ai-coach-question">
+          <p class="ai-coach-question-text">지금 어디에서 막혔나요?</p>
+          <div id="ai-coach-reason-list" class="ai-coach-reason-list"></div>
+        </div>
+        <div id="ai-coach-scaffold" class="ai-coach-scaffold" hidden>
+          <p id="ai-coach-scaffold-message" class="ai-coach-scaffold-message"></p>
+          <div class="row">
+            <button id="ai-coach-action" class="btn ghost small" type="button"></button>
+            <button id="ai-coach-back" class="btn ghost small" type="button">다른 이유 고르기</button>
+          </div>
+        </div>
       </aside>
       <div id="check" class="check" hidden></div>
       <div id="editor" class="editor"></div>

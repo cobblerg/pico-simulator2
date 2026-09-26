@@ -277,6 +277,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ai-coach-head h3 { font: 15px var(--display); }
 .ai-coach-desc { font-size: 13px; color: var(--muted); max-width: 60ch; }
 
+/* D11-B2-C: 막힌 지점 선택(질문 화면)/시작 발판(스캐폴드 화면) — 둘 중 하나만 보임 */
+.ai-coach-question-text { font: 500 13.5px var(--font); color: var(--ink); }
+.ai-coach-reason-list { display: flex; flex-direction: column; gap: 6px; }
+.ai-coach-reason-list .btn { justify-content: flex-start; text-align: left; }
+.ai-coach-scaffold { display: flex; flex-direction: column; gap: 8px; }
+.ai-coach-scaffold-message { font-size: 13px; color: var(--muted); max-width: 60ch; }
+
 /* 실물로 옮기기 */
 .view-bridge { display: flex; flex-direction: column; gap: 14px; }
 .bridge-intro { padding: 18px; display: flex; flex-direction: column; gap: 6px; }
