@@ -649,6 +649,12 @@ function checkAtEnd(ok: boolean) {
     const rises = runEdges.filter((x) => x[0] === 15 && x[1] === 1).length;
     if (ok2) showCheck(true, `GP15 LED가 ${rises}번 켜졌어요.`);
     else showCheck(false, `GP15 LED가 ${rises}번 켜졌어요. 3번 깜빡여야 해요.`);
+  } else if (mission.id === 'm3') {
+    checkLive();
+    if (!checkEl.classList.contains('pass')) showCheck(false, '버튼을 누르고 있는 동안 LED가 켜지고, 떼면 꺼지는지 확인해 보세요.');
+  } else if (mission.id === 'm4') {
+    checkLive();
+    if (!checkEl.classList.contains('pass')) showCheck(false, '콘솔에 가변저항 값이 바뀌어 출력되는지 확인해 보세요.');
   } else if (mission.id === 'm5') {
     checkLive();
     if (checkEl.classList.contains('pass')) return;
@@ -661,7 +667,7 @@ function checkAtEnd(ok: boolean) {
 }
 
 function checkLive() {
-  if (!running && mission.id !== 'm5' && mission.id !== 'm6') return;
+  if (!running && mission.id !== 'm3' && mission.id !== 'm4' && mission.id !== 'm5' && mission.id !== 'm6') return;
   if (checkEl.classList.contains('pass') && !checkEl.hidden) return;
   if (missingParts().length) return;
   if (mission.id === 'm3') {
