@@ -62,6 +62,7 @@ import { store, startWorkspace, saveWorkspace, Workspace } from './project';
 import { MISSIONS } from './data';
 import { disableWorkspaceAutosave, enableWorkspaceAutosave } from './workspace-autosave';
 import { enableLearningEventSink, disableLearningEventSink } from './learning-event-lifecycle';
+import { loadStudentFeedback } from './student-feedback';
 
 const SESSION_KEY = 'picosim:student-context';
 
@@ -265,6 +266,7 @@ export function initStudentEntryGate(): void {
   if (loadStudentContext()) {
     showExitButton(true);
     enableLearningEventSink(); // F5 등으로 이미 유효한 세션을 이어받는 경우
+    void loadStudentFeedback(); // D11-B10: 같은 시점에 선생님 피드백도 불러온다
   } else {
     openGate();
   }
@@ -337,6 +339,7 @@ export function initStudentEntryGate(): void {
         dialog!.close();
         showExitButton(true);
         enableLearningEventSink(); // 이제부터 이 학생의 picosim:event를 저장한다
+        void loadStudentFeedback(); // D11-B10: 같은 시점에 선생님 피드백도 불러온다
         return;
       }
 

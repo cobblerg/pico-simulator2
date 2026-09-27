@@ -150,6 +150,9 @@ small { font-weight: 400; }
 .need.ok { border-style: solid; border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
 .hint { font-size: 12.5px; color: var(--muted); }
 .hint b { color: var(--ink); font-weight: 500; margin-right: 4px; }
+.sf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sf-list li { border: 1px solid var(--line); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.sf-list li p { margin: 0; font-size: 13px; }
 .blocks { display: flex; flex-direction: column; gap: 6px; }
 .code-block { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; border: 1px solid var(--line); background: var(--surface-2); border-radius: 8px; padding: 6px 10px; cursor: grab; font: 12px var(--font); color: var(--muted); }
 .code-block code { background: none; border: 0; padding: 0; color: var(--ink); font-size: 12.5px; }

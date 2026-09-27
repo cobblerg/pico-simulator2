@@ -72,6 +72,13 @@
           <p class="hint"><b>힌트</b> <span id="m-hint"></span></p>
         </div>
         <div class="card">
+          <h2 class="eyebrow">선생님 피드백</h2>
+          <div id="sf-loading" hidden><p class="msg">피드백을 불러오는 중...</p></div>
+          <div id="sf-empty" hidden><p class="muted">아직 선생님 피드백이 없습니다.</p></div>
+          <div id="sf-error" hidden><p class="msg" id="sf-error-msg"></p></div>
+          <ul id="sf-list" class="sf-list" hidden></ul>
+        </div>
+        <div class="card">
           <h2 class="eyebrow">코드 블록 <small>누르거나 에디터로 끌기</small></h2>
           <div id="blocks" class="blocks"></div>
         </div>
