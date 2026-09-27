@@ -121,3 +121,68 @@ export async function listRecentLearningEventsForEnrollment(
     };
   });
 }
+
+// ---------- D11-B12: 피드백 이후 관찰(Post-Feedback Observation) ----------
+//
+// "가장 최근 feedback-retry 이후 시간순으로 관찰된 학습 행동"만 deterministic
+// 하게 집계한다 — 특정 feedbackId와 연결하지 않는다(Audit 결론: Timeline이
+// 이미 feedbackId를 제거한 채로 이벤트를 주므로, 특정 feedback 하나에
+// 결과를 귀속시키는 것은 근거 없는 association이 된다). 평가/판정(향상됨,
+// 이해함, 성공함 등)은 절대 계산하지 않는다 — 오직 개수/최근값 같은 사실만
+// 센다. activityId로 필터링하지 않는다(feedback-retry.activityId는 클릭
+// 당시 context일 뿐, 이후 이벤트가 다른 activity에서 일어나도 그대로 포함).
+export type PostFeedbackObservation =
+  | { hasRetry: false }
+  | {
+      hasRetry: true;
+      retryAt: string;
+      totalEvents: number;
+      runCount: number;
+      checkpointCount: number;
+      coachCount: number;
+      latestActivityId: string | null;
+      latestCheckpointMsg: string | null;
+    };
+
+// events는 이미 오래된 → 최신 순으로 정렬되어 있다는 전제(이 파일의 다른
+// 모든 함수와 동일한 전제)를 그대로 쓴다 — 별도 정렬을 하지 않고, 뒤에서부터
+// 가장 최근 feedback-retry의 index를 찾아 slice(index + 1)만 본다.
+export function buildPostFeedbackObservation(events: TeacherTimelineEvent[]): PostFeedbackObservation {
+  let anchorIndex = -1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].eventType === 'feedback-retry') {
+      anchorIndex = i;
+      break;
+    }
+  }
+  if (anchorIndex === -1) return { hasRetry: false };
+
+  const after = events.slice(anchorIndex + 1);
+  let runCount = 0;
+  let checkpointCount = 0;
+  let coachCount = 0;
+  let latestActivityId: string | null = null;
+  let latestCheckpointMsg: string | null = null;
+
+  for (const ev of after) {
+    latestActivityId = ev.activityId;
+    if (ev.eventType === 'run') runCount++;
+    if (ev.eventType === 'checkpoint') {
+      checkpointCount++;
+      const msg = (ev.payload as { msg?: unknown }).msg;
+      if (typeof msg === 'string') latestCheckpointMsg = msg;
+    }
+    if (ev.eventType.startsWith('coach-')) coachCount++;
+  }
+
+  return {
+    hasRetry: true,
+    retryAt: events[anchorIndex].createdAt,
+    totalEvents: after.length,
+    runCount,
+    checkpointCount,
+    coachCount,
+    latestActivityId,
+    latestCheckpointMsg,
+  };
+}

@@ -90,6 +90,28 @@ textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line)
       <ul id="t-timeline-ul" class="t-timeline"></ul>
     </div>
 
+    <div id="t-pfo-section" hidden>
+      <h2 class="eyebrow">피드백 이후 관찰</h2>
+      <p class="muted">가장 최근 '다시 해보기' 선택 이후 시간순으로 관찰된 학습 행동입니다.</p>
+      <div id="t-pfo-empty" hidden><p class="muted">아직 다시 해보기를 선택한 기록이 없습니다.</p></div>
+      <div id="t-pfo-result" hidden>
+        <h3 class="ai-subhead">최근 다시 해보기 선택</h3>
+        <p id="t-pfo-retry-at"></p>
+        <h3 class="ai-subhead">이후 학습 이벤트</h3>
+        <p id="t-pfo-total"></p>
+        <h3 class="ai-subhead">실행</h3>
+        <p id="t-pfo-run"></p>
+        <h3 class="ai-subhead">체크포인트</h3>
+        <p id="t-pfo-checkpoint"></p>
+        <p id="t-pfo-checkpoint-msg" class="muted"></p>
+        <h3 class="ai-subhead">AI 코치 사용</h3>
+        <p id="t-pfo-coach"></p>
+        <h3 class="ai-subhead">최근 활동</h3>
+        <p id="t-pfo-activity"></p>
+      </div>
+      <p class="muted">시간순으로 관찰된 사실만 보여주며, 특정 피드백과의 인과관계를 의미하지 않습니다.</p>
+    </div>
+
     <div id="t-ai-section" hidden>
       <h2 class="eyebrow">AI 학습과정 분석</h2>
       <p class="muted">AI가 생성한 내용은 참고용입니다. 교사가 확인하고 필요하면 수정한 뒤 사용하세요.</p>

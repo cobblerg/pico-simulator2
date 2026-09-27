@@ -81,6 +81,16 @@ const timelineLoadingEl = el<HTMLElement>('t-timeline-loading');
 const timelineEmptyEl = el<HTMLElement>('t-timeline-empty');
 const timelineListEl = el<HTMLElement>('t-timeline-list');
 const timelineUl = el<HTMLUListElement>('t-timeline-ul');
+const pfoSectionEl = el<HTMLElement>('t-pfo-section');
+const pfoEmptyEl = el<HTMLElement>('t-pfo-empty');
+const pfoResultEl = el<HTMLElement>('t-pfo-result');
+const pfoRetryAtEl = el<HTMLElement>('t-pfo-retry-at');
+const pfoTotalEl = el<HTMLElement>('t-pfo-total');
+const pfoRunEl = el<HTMLElement>('t-pfo-run');
+const pfoCheckpointEl = el<HTMLElement>('t-pfo-checkpoint');
+const pfoCheckpointMsgEl = el<HTMLElement>('t-pfo-checkpoint-msg');
+const pfoCoachEl = el<HTMLElement>('t-pfo-coach');
+const pfoActivityEl = el<HTMLElement>('t-pfo-activity');
 const errorEl = el<HTMLElement>('t-error');
 const errorMsgEl = el<HTMLElement>('t-error-msg');
 const retryBtn = el<HTMLButtonElement>('t-retry');
@@ -239,7 +249,25 @@ type TeacherStudentsResponse = { status: 'ok'; students: StudentSummary[] } | { 
 // 이미 최소화한 payload를 그대로 받는다(이 파일에서 추가로 payload를
 // 가공하지 않는다, 0-D10-D 확정 결정 6은 서버 책임).
 type TimelineEvent = { eventId: string; eventType: string; activityId: string; createdAt: string; payload: unknown };
-type TeacherTimelineResponse = { status: 'ok'; events: TimelineEvent[] } | { status: 'not_approved' };
+
+// teacher-timeline-data.ts의 PostFeedbackObservation과 동일한 shape(D11-B12).
+// feedbackId/teacherId/enrollmentId/studentId/classId/eventId를 담지 않는다
+// — 서버가 애초에 그 값들을 넣지 않으므로 이 타입에도 없다.
+type PostFeedbackObservationUI =
+  | { hasRetry: false }
+  | {
+      hasRetry: true;
+      retryAt: string;
+      totalEvents: number;
+      runCount: number;
+      checkpointCount: number;
+      coachCount: number;
+      latestActivityId: string | null;
+      latestCheckpointMsg: string | null;
+    };
+type TeacherTimelineResponse =
+  | { status: 'ok'; events: TimelineEvent[]; postFeedbackObservation: PostFeedbackObservationUI }
+  | { status: 'not_approved' };
 
 // teacher-feedback-data.ts의 TeacherFeedbackDTO와 동일한 shape. eventId는
 // 이번 단계에 생성되는 모든 feedback에서 항상 null이지만(0-D10-E 확정
@@ -381,6 +409,7 @@ function resetDashboardState(): void {
   feedbackRetryAction = null;
   resetFeedbackForm();
   setFeedbackSubState(null);
+  pfoSectionEl.hidden = true;
   aiSectionEl.hidden = true;
   currentAIAnalysis = null;
   aiRetryAction = null;
@@ -405,6 +434,13 @@ function resetDashboardState(): void {
   aiHelpUsageEl.textContent = '';
   aiRetryChangeEl.textContent = '';
   aiSuggestedEl.textContent = '';
+  pfoRetryAtEl.textContent = '';
+  pfoTotalEl.textContent = '';
+  pfoRunEl.textContent = '';
+  pfoCheckpointEl.textContent = '';
+  pfoCheckpointMsgEl.textContent = '';
+  pfoCoachEl.textContent = '';
+  pfoActivityEl.textContent = '';
 }
 
 function showApprovedError(message: string, retry: () => void): void {
@@ -453,6 +489,29 @@ function renderStudentList(): void {
 // Timeline 이벤트를 시간순(오래된 것 → 최신, 서버가 이미 이 순서로 정렬해
 // 응답함)으로 나열한다. 이벤트 항목 자체에는 클릭 동작을 두지 않는다(코드
 // 상세 보기는 0-D10-D 범위 밖).
+// D11-B12: "피드백 이후 관찰" card. 가장 최근 feedback-retry 이후 시간순으로
+// 관찰된 사실(개수/최근값)만 표시한다 — 특정 feedback과의 인과관계나 학습
+// 향상/이해 여부를 판정하는 문구는 절대 넣지 않는다(고정 안내 문구로
+// 그 해석 경계를 매번 명시한다).
+function renderPostFeedbackObservation(obs: PostFeedbackObservationUI): void {
+  pfoEmptyEl.hidden = obs.hasRetry;
+  pfoResultEl.hidden = !obs.hasRetry;
+  if (!obs.hasRetry) return;
+
+  pfoRetryAtEl.textContent = new Date(obs.retryAt).toLocaleString('ko-KR', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  pfoTotalEl.textContent = `${obs.totalEvents}회`;
+  pfoRunEl.textContent = `${obs.runCount}회`;
+  pfoCheckpointEl.textContent = `${obs.checkpointCount}회`;
+  pfoCheckpointMsgEl.textContent = obs.latestCheckpointMsg ?? '';
+  pfoCoachEl.textContent = `${obs.coachCount}회`;
+  pfoActivityEl.textContent = obs.latestActivityId ?? '';
+}
+
 function renderTimeline(events: TimelineEvent[]): void {
   timelineUl.innerHTML = '';
   for (const ev of events) {
@@ -525,6 +584,7 @@ async function selectClass(classId: string): Promise<void> {
   currentFeedback = [];
   resetFeedbackForm();
   setFeedbackSubState(null);
+  pfoSectionEl.hidden = true;
   aiSectionEl.hidden = true;
   currentAIAnalysis = null;
   aiRetryAction = null;
@@ -580,6 +640,18 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
   feedbackSectionEl.hidden = false;
   currentFeedback = [];
   resetFeedbackForm();
+  // D11-B12: pfoSectionEl은 Timeline과 같은 응답(postFeedbackObservation)에서
+  // 채워지므로 별도 fetch 없이 Timeline 로드가 끝나면 renderPostFeedbackObservation()이
+  // 값을 채운다 — 여기서는 섹션을 보이게만 하고 내용은 비워 이전 학생의
+  // 관찰 결과가 잠깐이라도 남지 않게 한다.
+  pfoSectionEl.hidden = false;
+  pfoRetryAtEl.textContent = '';
+  pfoTotalEl.textContent = '';
+  pfoRunEl.textContent = '';
+  pfoCheckpointEl.textContent = '';
+  pfoCheckpointMsgEl.textContent = '';
+  pfoCoachEl.textContent = '';
+  pfoActivityEl.textContent = '';
   // AI 분석 영역을 보여주되, 이전 학생의 분석 결과는 즉시 비운다 — 단,
   // 자동으로 분석을 다시 요청하지는 않는다(0-D11-A 확정 요구사항: "AI는
   // 명시적 버튼 클릭으로만 호출", 학생 선택만으로 비용이 발생하면 안 됨).
@@ -619,6 +691,7 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
       return;
     }
     renderTimeline(body.events);
+    renderPostFeedbackObservation(body.postFeedbackObservation);
     setApprovedSubState(body.events.length === 0 ? 'empty-timeline' : 'timeline');
   } catch {
     if (isStale()) return;

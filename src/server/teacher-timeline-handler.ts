@@ -23,7 +23,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { extractBearerToken, resolveTeacherFromAccessToken } from './teacher-session';
 import { assertTeacherOwnsClass, assertStudentEnrolledInClass } from './teacher-authorization';
-import { listRecentLearningEventsForEnrollment, TeacherTimelineEvent } from './teacher-timeline-data';
+import { listRecentLearningEventsForEnrollment, buildPostFeedbackObservation, TeacherTimelineEvent } from './teacher-timeline-data';
 
 export type TeacherTimelineHandlerResult = { httpStatus: number; body: unknown };
 
@@ -96,5 +96,11 @@ export async function handleTeacherTimelineRequest(
     return { httpStatus: 500, body: { error: 'internal error' } };
   }
 
-  return { httpStatus: 200, body: { status: 'ok', events } };
+  // D11-B12: 이미 조회한 events 배열을 그대로 재사용해 deterministic하게
+  // 계산한다 — 새 DB 쿼리도, 새 identity 입력도 없다. 이 함수 자체가
+  // feedbackId/teacherId/enrollmentId/studentId/classId/eventId를 결과에
+  // 전혀 포함하지 않는다(buildPostFeedbackObservation 참고).
+  const postFeedbackObservation = buildPostFeedbackObservation(events);
+
+  return { httpStatus: 200, body: { status: 'ok', events, postFeedbackObservation } };
 }
