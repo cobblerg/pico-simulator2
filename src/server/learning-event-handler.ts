@@ -3,7 +3,7 @@
 // 이 파일은 순수 함수다 — Vercel/Node HTTP 타입에 의존하지 않는다.
 // api/events.ts(얇은 HTTP 어댑터)가 이 함수를 감싼다.
 //
-// 처리 순서(0-D9-B 요청 그대로):
+// 처리 순서(0-D9-B 요청 그대로, D12-1B가 7.6/9에 clientEventId 처리 추가):
 //   1. POST 확인
 //   2. JSON request validation(구조적 검증만 — 필드 내용은 7번에서)
 //   3~5. student_session cookie 추출 + verifyStudentSession() + session
@@ -12,11 +12,21 @@
 //      전혀 쓰지 않는다. session.enrollmentId로 DB를 조회해 재확인한
 //      값만 이후 단계에서 쓴다.
 //   7. activityId/eventType/payload validation(형식/화이트리스트/크기)
-//   8. learning_event INSERT
-//   9. generic response
+//   7.6. (D12-1B) optional clientEventId 형식 검증 — UUID 형식이 아니면 400.
+//        없으면(구버전 client) 이 단계를 건너뛰고 기존과 완전히 동일하게
+//        진행한다(하위호환, D12-1A §U).
+//   8. learning_event INSERT(clientEventId가 있으면 idempotency 적용)
+//   9. outcome에 따른 response — clientEventId가 없었던 요청은 기존과
+//      완전히 동일한 {status:'ok'}를 반환한다(response shape 하위호환).
 //
 // 이 순서가 중요한 이유: 인증(6번까지)을 입력 내용 검증(7번)보다 먼저
 // 끝낸다 — 신뢰하지 않는 요청의 payload를 굳이 자세히 들여다보지 않는다.
+//
+// D12-1B 신뢰 경계 재확인: clientEventId는 studentId/enrollmentId/classId와
+// 같은 identity 필드가 아니다 — IDENTITY_FIELD_NAMES 방어(7번)는 이
+// 필드를 전혀 언급하지 않으며, clientEventId가 "누구의 기록인지"를
+// 결정하는 데 쓰이는 코드 경로는 이 파일 어디에도 없다(오직 6번에서
+// 재확인된 confirmed.enrollmentId와 함께 delivery dedup 판정에만 쓰인다).
 import { StudentSessionIdentity, parseStudentSessionCookie, verifyStudentSession } from './student-session';
 import { LearningEventDataSource } from './learning-event-data';
 
@@ -339,6 +349,18 @@ export async function handleLearningEventRequest(
     return { httpStatus: 400, body: { error: 'invalid request' } };
   }
 
+  // 7.6. (D12-1B) clientEventId는 완전히 optional이다 — 필드 자체가 없으면
+  // (구버전 client) 검증을 건너뛰고 undefined인 채로 진행한다. 있는데
+  // 형식이 UUID가 아니면 400 — insert 자체를 시도하지 않는다.
+  const rawClientEventId = body.clientEventId;
+  let clientEventId: string | undefined;
+  if (rawClientEventId !== undefined) {
+    if (typeof rawClientEventId !== 'string' || !UUID_PATTERN.test(rawClientEventId)) {
+      return { httpStatus: 400, body: { error: 'invalid request' } };
+    }
+    clientEventId = rawClientEventId;
+  }
+
   // 7.5. feedback-retry 전용 ownership 검증(D11-B11) — sanitizer는 형식만
   // 확인했을 뿐, payload.feedbackId가 실제로 이 학생(session.enrollmentId로
   // 재확인된 confirmed.enrollmentId)의 feedback인지는 DB로 다시 물어봐야
@@ -361,19 +383,32 @@ export async function handleLearningEventRequest(
   }
 
   // 8. learning_event INSERT — identity는 반드시 6번에서 재확인된 값만 쓴다.
+  let result;
   try {
-    await dataSource.insertLearningEvent({
+    result = await dataSource.insertLearningEvent({
       enrollmentId: confirmed.enrollmentId,
       studentId: confirmed.studentId,
       classId: confirmed.classId,
       activityId: body.activityId as string,
       eventType,
       payload: sanitized.payload,
+      clientEventId,
     });
   } catch {
     return { httpStatus: 500, body: { error: 'internal error' } };
   }
 
-  // 9. generic response
-  return { httpStatus: 200, body: { status: 'ok' } };
+  // 9. response — clientEventId가 없었던 요청(구버전 client)은 항상
+  // 'created'이며, 기존과 완전히 동일한 body를 그대로 반환한다(response
+  // shape 하위호환, D12-1A §U/§P). clientEventId가 있었던 요청만 outcome을
+  // 함께 알려준다 — 'duplicate'도 200이다("오류처럼 보이지 않아야 한다",
+  // D12-1A §13). 'conflict'만 409 — 기존 row의 payload/내용은 절대
+  // 응답에 담지 않는다(보안 검토 §16).
+  if (clientEventId === undefined) {
+    return { httpStatus: 200, body: { status: 'ok' } };
+  }
+  if (result.outcome === 'conflict') {
+    return { httpStatus: 409, body: { error: 'invalid request' } };
+  }
+  return { httpStatus: 200, body: { status: 'ok', outcome: result.outcome } };
 }

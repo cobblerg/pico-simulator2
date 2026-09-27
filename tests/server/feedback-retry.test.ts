@@ -33,6 +33,7 @@ function makeDataSource() {
     },
     async insertLearningEvent(event) {
       inserted.push(event);
+      return { outcome: 'created' };
     },
     async getFeedbackEnrollmentId(feedbackId) {
       lookupCalls.push(feedbackId);
