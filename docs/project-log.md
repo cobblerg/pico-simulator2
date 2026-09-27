@@ -1694,3 +1694,147 @@ D11-B Regression Test Gate
 목적: B8~B12 및 Stabilization 1~2의 핵심 Teacher Feedback Loop 동작을 반복 가능한 regression checks로 보호한다.
 
 단, Regression Test Gate는 이 docs-only close 작업에서는 시작하지 않는다.
+
+## 2026-09-27 — D11-B Regression Test Gate
+
+### Status
+CLOSED
+
+### 목적
+D11-B8~B12 및 Stabilization 1~2를 향후 코드 변경으로부터 보호하기 위한 최소 자동 regression test 기반을 도입했다.
+
+이번 Gate의 목표는 높은 line coverage가 아니라 다음의 회귀를 탐지하는 것이다:
+- learning-record trust
+- identity / authorization
+- event semantics
+- deterministic derived logic
+- AI privacy boundary
+- teacher-in-the-loop boundary
+
+### Test Infrastructure
+- Test runner: Vitest
+- 추가 scripts: `npm test` → `vitest run`, `npm run test:watch` → `vitest`
+- Test organization: `tests/server/`, `tests/ui/`
+- DOM environment: NONE
+- Playwright: NOT ADDED
+- Real Supabase: NOT USED
+- Real OpenAI: NOT USED
+
+### Implementation Commit
+- full: 7c5fd4672fe74c4ddc82f1943db6626318f385cf
+- short: 7c5fd46
+- message: test: add D11-B regression gate
+- 변경: 9 files changed, 1574 insertions(+), 8 deletions(-)
+
+### Test Files
+추가된 6개 테스트 파일:
+- tests/server/post-feedback-observation.test.ts
+- tests/server/feedback-retry.test.ts
+- tests/server/student-feedback.test.ts
+- tests/server/ai-learning-analysis.test.ts
+- tests/server/teacher-in-loop.test.ts
+- tests/ui/teacher-regression.test.ts
+
+### Production Testability Change
+`src/ui/teacher-app.ts`에서 `EVENT_LABELS`/`COACH_REFLECTION_CHOICE_LABELS`/`describeEvent` 3개 심볼에 export visibility만 추가했다.
+
+- dictionary 값 변경 없음
+- describeEvent body 변경 없음
+- DOM initialization 변경 없음
+- event binding 변경 없음
+- runtime behavior 변경 없음
+- Timeline/API behavior 변경 없음
+
+Vitest node 환경에서 `teacher-app.ts`는 import 시 DOM을 즉시 요구하기 때문에, Phase 1에서는 직접 import test 대신 source-level regression test를 사용했다. jsdom/happy-dom을 추가하지 않았다.
+
+### Regression Coverage
+- B9 AI privacy → T9 / T9b / T9c
+- B9 AI failure handling → T10 / T11
+- B10 Student Feedback isolation → T7 / T8
+- B11 Feedback ownership → T4 / T5 / T6
+- B12 Post-Feedback deterministic observation → T1 / T2 / T3
+- Stabilization 1 → T12 / T13 / T13b
+- Teacher-in-the-loop → T14
+
+### Important Semantic Boundaries
+테스트가 보호하는 의미를 명확히 남긴다.
+
+- feedback-retry ≠ 실제 code Run 완료
+- coach-reflection resolved = 학생이 "해결됐다고 응답"한 자기보고
+- B12 Post-Feedback Observation = feedback-retry 이후 시간 순서상 관찰된 기록. B12는 특정 feedback이 후속 학습 행동의 원인이라고 주장하지 않는다.
+- AI analysis input은 허용된 최소 정보만 사용하고, identity/full code/free-text error 등 금지 정보가 AI payload에 포함되지 않도록 보호한다.
+- AI suggested feedback은 자동 저장/자동 전송되지 않으며, 교사가 최종 검토하는 teacher-in-the-loop을 유지한다.
+
+### Test Result
+- Test Files: 6 passed (6)
+- Tests: 17 passed (17)
+- Failed: 0
+
+최종 Commit Gate 재실행 Duration: 419ms(참고값, 환경 의존)
+
+### Build Result
+`npm run build`: PASS(더미 Supabase env 사용). 3개 build artifact 정상 생성. `dist/teacher.html`: 241KB. export visibility 추가로 기존 bundle behavior/size에 의미 있는 변화 없음.
+
+### External Service Boundary
+- Production Supabase: NOT USED
+- Production DB: NOT USED
+- Real OpenAI: NOT USED
+- Production URLs: NOT CALLED
+
+모든 server test는 fake client/data source/provider 기반이다.
+
+DB/schema: NONE
+
+Migration: NONE
+
+### Deferred
+이번 Gate에서 의도적으로 제외된 것:
+- B8 coach-* sanitizer 저장 단계 자동 테스트
+- Stabilization 2 DOM/browser automation
+- aria-expanded 실제 click behavior
+- scrollHeight / auto-scroll browser behavior
+- jsdom
+- happy-dom
+- Playwright
+- full browser E2E
+- real Supabase integration
+- Production DB test
+- real OpenAI call
+- AI response quality evaluation
+- visual regression
+- performance/load testing
+- 25 event type 전체 snapshot
+- full auth matrix
+
+이 항목들은 현재 Gate의 실패나 미완료가 아니라 의도적인 deferred scope다.
+
+### Development Rule Going Forward
+향후 D11-B 관련 production 변경 전/후 최소 검증: `npm test`, `npm run build`.
+
+특히 Teacher Feedback Loop의 semantic/privacy/identity 관련 변경에서는 Regression Gate를 통과해야 한다.
+
+단, CI 도입은 이번 단계 범위가 아니다.
+
+### Closure
+D11-B Regression Test Gate: CLOSED
+
+Implementation: 7c5fd46
+
+Automated tests: 17 PASS
+
+Build: PASS
+
+DB/schema: NONE
+
+Migration: NONE
+
+Real Supabase/OpenAI: NOT USED
+
+### Next Direction
+새 기능 번호를 임의로 만들지 않는다.
+
+- D11-B stabilization / regression protection baseline established.
+- B8 coach-* sanitizer automated coverage: DEFERRED candidate
+- Stabilization 2 browser automation: LATER
+- Playwright: LATER, preferably after CI/test workflow need is clear
+- 새 feature: NOT STARTED
