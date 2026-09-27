@@ -1072,4 +1072,129 @@ Stabilization commits:
 
 Production E2E: PASS
 
+## 2026-09-27 — D11-B10 — Student Teacher Feedback View
+
+### Status
+CLOSED
+
+### 구현 목적
+Teacher 화면에서 저장한 피드백을 해당 학생이 자신의 PicoSim2 학생 화면에서 안전하게 확인할 수 있도록 연결했다. Teacher Feedback Loop 전체를 구현한 것이 아니라, "teacher feedback 저장 → 학생에게 전달 → 학생이 확인" 구간만 완성한 기능이다.
+
+### Reused Architecture
+새 피드백 시스템을 만들지 않고 기존 구조를 그대로 재사용했다:
+- `teacher_feedback` table
+- `listFeedbackForEnrollment()`
+- `student_session` HttpOnly signed cookie
+- `StudentSessionPayload.enrollmentId`
+
+DB schema/migration 변경 없음. 기존 Teacher feedback 작성/수정/저장 흐름 변경 없음.
+
+### Student Feedback API
+`GET /api/student-feedback`
+
+동작: `student_session` → `verifyStudentSession()` → `session.enrollmentId` → `listFeedbackForEnrollment()` → minimized response.
+
+response: `id` / `content` / `createdAt` / `updatedAt`
+
+반환하지 않는 identity/internal fields: `teacherId` / `enrollmentId` / `studentId` / `classId` / `eventId`
+
+GET 이외 method는 허용하지 않는다(405). invalid/missing/expired `student_session`은 feedback을 반환하지 않는다(401).
+
+### Security Boundary
+학생 feedback identity의 source of truth는 오직 server-side verified `student_session`이다. client URL/query/body의 `studentId`/`enrollmentId`/`classId`/`teacherId`를 조회 identity로 사용하지 않는다 — 실제로 endpoint 자체에 다른 학생을 지정할 identity parameter가 없다. 학생 A가 학생 B의 feedback을 지정해서 조회하는 API 구조를 만들지 않았다. feedback content는 학생 UI에서 `textContent`로 렌더하여 HTML을 실행하지 않는다.
+
+### Student UI
+학생 화면에 "선생님 피드백" 카드를 추가했다.
+
+상태: `loading` / `empty` / `error` / `result`. 여러 feedback을 지원하며, 학생 화면에서는 최신 feedback이 먼저 보이도록 표시한다(교사 화면은 반대로 오래된 것부터 쌓아 보여주는 기존 방식 그대로 유지). `student_session`이 확정된 뒤에만 feedback을 fetch한다. 학생 전환 시 기존 workspace reset/reload 흐름을 그대로 활용해 이전 학생의 feedback이 새 학생에게 남지 않도록 했다 — localStorage를 feedback identity로 사용하지 않는다.
+
+### Feature Commit
+- full hash: 530f7a78b78a09aa1949f40194e0af8a9768fb0e
+- short: 530f7a7
+- message: feat: show teacher feedback to students
+
+included files:
+- api/student-feedback.ts
+- src/server/student-feedback-handler.ts
+- src/ui/student-feedback.ts
+- src/ui/student-entry-ui.ts
+- src/index.html
+- src/ui/styles.css
+
+6 files changed, 215 insertions
+
+### Validation
+구현 단계 validation:
+- build PASS
+- student feedback API bundle PASS
+- valid session → own feedback PASS
+- empty feedback PASS
+- multiple feedback PASS
+- missing session → 401 PASS
+- invalid signed cookie → 401 PASS
+- expired session → 401 PASS
+- non-GET → 405 PASS
+- DB error → generic 500 PASS
+- response data minimization PASS
+- XSS-safe text rendering PASS
+
+DB/schema/migration 변경 없음.
+
+### Production E2E
+Production에서 실제 검증 완료.
+
+Teacher가 학생 A에게 다음 테스트 feedback 저장: "D11-B10 테스트 - LED 연결 과정을 다시 설명해 보세요."
+
+학생 A 화면: "선생님 피드백" 카드에서 해당 feedback이 정상 표시됨. 날짜: 2026. 9. 27.
+
+확인:
+- teacher-saved feedback delivery: PASS
+- student feedback rendering: PASS
+
+이후 학생 B로 전환하여 확인: 학생 A에게 저장한 위 feedback이 학생 B 화면에서는 보이지 않음.
+
+따라서 Production에서:
+- student A isolation: PASS
+- student B isolation: PASS
+
+핵심 경로: Teacher save → teacher_feedback → student_session enrollment identity → GET /api/student-feedback → correct student UI
+
+Production E2E PASS.
+
+### Explicitly Out of Scope
+이번 D11-B10에서 구현하지 않은 항목:
+- read/unread 상태
+- "확인했습니다" 기능
+- feedback-read learning_event
+- 특정 mission linkage
+- event_id linkage
+- "다시 해보기" 버튼
+- feedback 이후 학습 변화 자동 비교
+- 학생 답글
+- polling/auto refresh
+- notification
+
+이 항목들은 D11-B10 closure 조건이 아니다.
+
+### Known Follow-Up
+후속 Teacher Feedback Loop 후보:
+
+교사 피드백 → 학생 확인 → 다시 시도 → 새로운 learning_event → 교사가 이후 변화 확인
+
+또한 현재 학생 화면을 열어 둔 상태에서 교사가 새 feedback을 저장하면 자동으로 갱신되지 않을 수 있으므로, feedback refresh UX는 별도 후속 후보다.
+
+이번 closure에서는 구현하지 않는다.
+
+### Closure
+D11-B10: CLOSED
+
+Feature commit:
+- 530f7a78b78a09aa1949f40194e0af8a9768fb0e feat: show teacher feedback to students
+
+Production E2E: PASS
+
+DB/schema migration: NONE
+
+Student isolation: PASS
+
 Known follow-up: AI analysis latency optimization
