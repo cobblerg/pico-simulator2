@@ -1198,3 +1198,130 @@ DB/schema migration: NONE
 Student isolation: PASS
 
 Known follow-up: AI analysis latency optimization
+
+## 2026-09-27 — D11-B11 — Feedback-Guided Retry
+
+### Status
+CLOSED
+
+### 구현 목적
+학생이 교사가 작성한 feedback에서 "확인하고 다시 해보기"를 명시적으로 선택했을 때, 그 선택 사실을 신뢰 가능한 `learning_event`로 기록하고 Teacher Timeline에서 교사가 확인할 수 있도록 연결했다. Teacher Feedback Loop에서 "교사 피드백 → 학생 확인/재시도 선택 → 교사 Timeline" 구간을 완성한 기능이다.
+
+### Event Semantics
+신규 event: `feedback-retry`
+
+payload: `{ feedbackId: string }`
+
+정확한 의미: 학생이 특정 teacher feedback에서 "확인하고 다시 해보기"를 선택했다. 이 event 하나만으로 다음을 의미하지 않는다: 실제 Run 실행, 실제 재시도 완료, 문제 해결, checkpoint 통과, feedback 이해, 학습 성공. 실제 이후 행동은 기존 `run`/`checkpoint` 등의 별도 `learning_event`가 증거를 제공한다.
+
+### Ownership Security
+feedback-retry 저장 전 검증 순서: `student_session` → confirmed enrollment → feedbackId UUID validation → feedback enrollment lookup(`getFeedbackEnrollmentId()`) → enrollment ownership comparison → event insert.
+
+학생 A session으로 학생 B feedbackId를 제출하면 400 + `learning_event` insert 없음. 존재하지 않는 feedbackId 역시 다른 학생 feedbackId와 구별되는 정보를 client에 노출하지 않는다. 학생 identity의 source of truth는 `student_session`뿐이며, client body에 studentId/enrollmentId/classId/teacherId 등을 추가하지 않는다.
+
+### Student UX
+학생의 각 feedback 항목에 "확인하고 다시 해보기" 버튼을 추가했다. 클릭 시 기존 `POST /api/events` endpoint를 직접 재사용한다(별도 신규 API route 없음). 직접 호출한 이유: loading/disabled UI, 성공 UI, 실패 시 버튼 복구, explicit user action의 결과를 확인해야 하는 요구사항 때문이다.
+
+성공 시 "확인함 · 다시 해보세요" 상태로 변경되고 현재 렌더 세션에서 중복 제출을 방지한다. 실패 시 generic error + 버튼 재활성화.
+
+다음은 하지 않는다: navigation, mission 자동 이동, workspace reset, localStorage 저장, read/unread 영속 상태.
+
+### activityId Semantics
+`learning_event.activity_id`가 필수이므로 버튼 클릭 당시 현재 workspace/activity를 기록한다. Production에서 `[m1] 교사 피드백 후 다시 시도 선택`으로 표시됨을 확인했다.
+
+**중요**: `[m1]`은 버튼 클릭 당시 현재 activity context를 의미하며, "이 feedback이 m1에 대한 feedback이다"라는 의미가 아니다. feedback과 특정 mission을 자동 연결하지 않는다.
+
+### Teacher Timeline
+`feedback-retry` label: "교사 피드백 후 다시 시도 선택"
+
+`TIMELINE_SANITIZERS`: `feedback-retry` → `{}`. 따라서 feedbackId는 Teacher Timeline response/UI에 노출되지 않는다.
+
+### AI Learning Analysis
+AI input에는 `feedback-retry` eventType이 포함될 수 있으나, feedbackId는 Timeline sanitizer를 통해 제거되어 AI에 전달되지 않는다.
+
+`AI_SYSTEM_INSTRUCTIONS`에 "feedback-retry는 학생의 '다시 해보기 선택' 사실일 뿐이며 실제 Run/성공/문제 해결/feedback 이해의 증거가 아니다"라는 guardrail을 추가했다. `AI_OUTPUT_JSON_SCHEMA` 변경 없음.
+
+### DB / Schema
+NO MIGRATION. `teacher_feedback`/`learning_event` schema 변경 없음. `teacher_feedback.event_id`는 사용하지 않는다 — 해당 필드는 "특정 과거 learning_event에 대한 feedback"을 위한 기존 nullable FK 의미를 그대로 유지한다.
+
+### Feature Commit
+- full hash: 5f064768c6ddc33761d56afac6d2079d28e99b2d
+- short: 5f06476
+- message: feat: add feedback-guided retry event
+
+8 files changed, 159 insertions(+), 3 deletions(-)
+
+files:
+- src/server/ai-learning-analysis.ts
+- src/server/learning-event-data.ts
+- src/server/learning-event-handler.ts
+- src/server/teacher-feedback-data.ts
+- src/server/teacher-timeline-data.ts
+- src/ui/learning-event-sink.ts
+- src/ui/student-feedback.ts
+- src/ui/teacher-app.ts
+
+### Validation
+구현/Review Gate validation:
+- own feedback → event insert PASS
+- cross-student feedback → 400 / insert 없음 PASS
+- unknown feedback → 400 / insert 없음 PASS
+- invalid UUID → 400 / DB lookup 없음 PASS
+- missing/invalid session → 거부 PASS
+- forged enrollmentId → 거부 PASS
+- feedbackId hidden from Timeline PASS
+- feedbackId hidden from AI PASS
+- existing learning events regression PASS
+- Teacher feedback existing paths regression PASS
+- build PASS
+
+### Production E2E
+Production에서 실제 확인 완료.
+
+학생 화면: 기존 teacher feedback("D11-B10 테스트 - LED 연결 과정을 다시 설명해 보세요.") 표시 상태에서 "확인하고 다시 해보기" action 수행. 성공 후 버튼: "확인함 · 다시 해보세요"로 변경됨. PASS.
+
+Teacher Timeline: `오전 11:09 · [m1] 교사 피드백 후 다시 시도 선택` 실제 표시 확인. PASS.
+
+따라서 Production 핵심 경로: teacher feedback → student feedback UI → explicit retry selection → feedback-retry learning_event → Teacher Timeline. PASS.
+
+### Important Interpretation Boundary
+Production Timeline의 `[m1]`은 버튼 클릭 당시 현재 activity context다. feedback 자체가 m1을 대상으로 작성되었다는 증거가 아니다.
+
+또한 feedback-retry 뒤에 향후 run/checkpoint가 발생하더라도, 현재 데이터 모델에는 attempt correlation id / causal parent / feedback-run linkage가 없으므로 "이 feedback 때문에 해당 Run이 발생했다"고 데이터 수준에서 단정하지 않는다.
+
+가능한 표현: "학생이 다시 해보기를 선택했고, 이후 시간순으로 Run이 관찰되었다."
+
+### Explicitly Out of Scope
+D11-B11에서 구현하지 않은 항목:
+- read/unread persistent state
+- feedback-acknowledged 별도 event
+- student reply
+- mission/activity feedback linkage
+- teacher_feedback.event_id 사용
+- subsequent Run correlation
+- attempt id
+- causal linkage
+- automatic navigation
+- notification
+- feedback refresh
+- DB migration
+
+### Closure
+D11-B11: CLOSED
+
+Feature commit:
+- 5f064768c6ddc33761d56afac6d2079d28e99b2d feat: add feedback-guided retry event
+
+Production E2E: PASS
+
+Feedback ownership security: PASS
+
+Teacher Timeline integration: PASS
+
+DB/schema migration: NONE
+
+### Remaining Feedback Loop Boundary
+구현하지 않고 기록만 남긴다:
+- feedback 이후 실제 Run은 기존 learning_event로 관찰 가능
+- 특정 feedback과 이후 Run 사이의 causal/correlation linkage는 아직 없음
+- post-feedback learning change visibility는 후속 후보
