@@ -2175,3 +2175,137 @@ Pilot V1 core vertical slice: **CODE COMPLETE + PRODUCTION MANUAL SMOKE VERIFIED
 
 ### Next Direction
 다음 단계 후보(우선순위 결정은 별도 세션에서): classCode regeneration, enrollment 삭제 정책, 교사 학급 단위 analytics, 콘텐츠 플러그인 구조 확장. 새 기능 번호(D11-D 등)는 이 entry만으로 임의로 시작하지 않는다 — 별도 명시적 요청이 있을 때 시작한다.
+
+## D12-1B — Server/DB Idempotency Boundary
+
+### Status
+CLOSED
+
+### Purpose
+D12-0(Pilot V1 Readiness Audit)에서 확인된 가장 중요한 남은 learning-record trust risk — client 재전송 시 idempotency key가 없어 응답 유실 후 duplicate row가 생길 수 있는 문제 — 를 해결하기 위해, D12-1A(설계 게이트)에서 확정한 계약 중 **server/DB 경계만** 구현했다. Client(브라우저 큐/durable storage)는 이번 단계에서 손대지 않았다 — 이번 단계 이후에도 Production의 유일한 client는 계속 clientEventId 없이 요청을 보낸다.
+
+### Baseline
+구현 시작 baseline: `199c0d9c311391ba6e84abec2bcbde7bbaf8cf9f`(D11-C Production Smoke Test Close 커밋)
+
+### Implementation
+- `src/server/learning-event-data.ts`: `LearningEventInsert`에 optional `clientEventId?: string` 추가. `insertLearningEvent()`가 `InsertLearningEventResult`(`created`/`duplicate`/`conflict`)를 반환하도록 변경. 구현 방식은 `ON CONFLICT DO UPDATE`류의 upsert가 아니라 **"plain INSERT 시도 → unique_violation(23505)이면 SELECT로 기존 row 조회 → 비교"** 패턴(이 프로젝트의 기존 컨벤션인 `teacher-class-creation.ts`/`teacher-roster-creation.ts`와 동일 스타일) — `learning_event`에 이미 있는 select/insert grant만으로 충분하고 새 grant가 필요 없다. key 순서 차이로 인한 false conflict를 막기 위해 JSON.stringify 비교 대신 별도 순수 함수 `deepEqualForIdempotency()`(재귀적, key를 정렬한 뒤 비교)를 새로 작성했다.
+- `src/server/learning-event-handler.ts`: body의 optional `clientEventId` 필드를 검증(UUID 형식 아니면 400)하고 `insertLearningEvent()`에 전달, 반환된 outcome을 응답으로 매핑.
+- `tests/server/feedback-retry.test.ts`: 인터페이스 변경(`insertLearningEvent`가 이제 `InsertLearningEventResult`를 반환)에 맞춰 fake의 반환값(`{outcome:'created'}`)만 최소 수정.
+- `tests/server/learning-event-idempotency.test.ts`(신규): data-adapter 계층(fake SupabaseClient로 23505 시뮬레이션) + handler 계층(요청 계약) 두 층으로 구성.
+
+### Commit
+- full: `13e204c1dde7c38310add98d7eb5b4f7265fb0ef`
+- short: `13e204c`
+- message: `feat: add learning event idempotency boundary`
+- 변경: 5 files changed, 567 insertions(+), 12 deletions(-)
+  - `src/server/learning-event-data.ts`, `src/server/learning-event-handler.ts`, `supabase/migrations/20260927150000_learning_event_idempotency.sql`, `tests/server/feedback-retry.test.ts`, `tests/server/learning-event-idempotency.test.ts`
+
+### Database Migration
+`supabase/migrations/20260927150000_learning_event_idempotency.sql` — Production에 **적용 완료 및 검증됨**:
+- `learning_event` 컬럼 8개 → **9개**로 확인
+- 신규 컬럼: `client_event_id` — type `uuid`, nullable **YES**, default **NULL**
+- 신규 index(Production에서 실제 definition 확인):
+  ```sql
+  CREATE UNIQUE INDEX learning_event_enrollment_client_event_id_idx
+  ON public.learning_event
+  USING btree (enrollment_id, client_event_id)
+  WHERE (client_event_id IS NOT NULL)
+  ```
+- 특징: additive, backfill 없음, UPDATE 없음, DELETE 없음, 기존 row 그대로 보존, 기존 client(응답 shape 포함) 계속 호환.
+
+**Operational note**: Production DB에는 `supabase_migrations.schema_migrations` relation이 존재하지 않는다 — 즉 이 프로젝트는 Supabase CLI의 remote migration history 기능을 쓰지 않고, **Dashboard SQL Editor에서 각 migration 파일을 수동으로 실행하는 방식으로 운영되고 있다**(기존 5개 migration도 동일 방식으로 적용되어 있었음, D12-1B Deployment Gate에서 확인). 이것이 일반적인 최선의 방식이라서가 아니라, **현재 이 프로젝트가 실제로 운영되는 방식**이라 그대로 기록한다.
+
+### Production Deployment
+`13e204c`를 GitHub `main`에 push한 직후 **Vercel Production 자동 배포가 발생했다**(별도 승인 단계 없음, 이 프로젝트의 기존 CI/CD 정책 그대로). D12-1B Deployment Gate에서 확인한 근거: 배포 생성 시각이 commit 시각과 64초 차이(빌드 소요 시간과 일치), `pico-simulator2.vercel.app`(실제 Production alias) 포함, `api/events` 빌드 output 포함. **Vercel CLI 출력에서 git commit SHA를 직접 대조하지는 못했으므로 "100% 직접 증명"이라고 과장하지 않는다** — timing+build output+project policy에 근거한 매우 높은 확신으로 기록한다.
+
+이 자동 배포는 DB migration 적용보다 먼저 발생했다 — 즉 한동안 Production은 "new server + old schema" 상태였다. 코드 검토 결과 이 조합은 **SAFE**했다: 유일하게 존재하는 client(구버전)가 clientEventId를 전혀 보내지 않으므로, 새 서버 코드의 idempotency 관련 DB 경로 자체가 그 기간 동안 한 번도 실행되지 않았다.
+
+### Idempotency Contract
+- `clientEventId`: optional, UUID, client가 생성하는 delivery idempotency key — **student identity도, enrollment identity도, authorization 근거도 아니다.**
+- identity 신뢰 경계는 전혀 변경되지 않았다: student session → `verifyEnrollmentConsistency()` → server-side enrollment/student/class 재확인만이 여전히 "누구의 기록인가"를 결정한다.
+- Uniqueness: `(enrollment_id, client_event_id) WHERE client_event_id IS NOT NULL`.
+  - 같은 enrollment + 같은 clientEventId = 하나의 delivery identity.
+  - 서로 다른 enrollment에서는 같은 UUID를 써도 충돌하지 않는다(서로 다른 namespace).
+  - clientEventId 없는 구버전 client는 계속 지원된다(하위호환).
+
+### Duplicate Semantics(실제 구현 기준)
+동일 `clientEventId` 재전송 시, **동일 enrollment + 동일 activityId + 동일 eventType + 동일 sanitized payload**이면 `duplicate`로 처리(새 row 생성 없음). 넷 중 하나라도(activityId, eventType, sanitized payload) 다르면 `conflict`로 처리(새 row도, 기존 row 변경도 없음). payload 비교는 원문 그대로 저장하는 것이 아니라 **learning-event-handler.ts의 `SANITIZERS`를 통과한 이후의 payload**를 기준으로 하며(raw client payload 아님), JSON key 순서로 인한 false conflict를 막기 위해 `JSON.stringify` 비교 대신 key를 정렬해 재귀 비교하는 `deepEqualForIdempotency()`(신규 순수 함수)를 사용한다.
+
+### Response Contract(실제 handler 기준)
+```
+신규 이벤트(clientEventId 있음):        200 { status: 'ok', outcome: 'created' }
+동일 논리적 이벤트 재전송(duplicate):    200 { status: 'ok', outcome: 'duplicate' }   ← 오류로 보이지 않음
+충돌하는 재사용(conflict):              409 { error: 'invalid request' }              ← 기존 row 내용 노출 없음
+clientEventId 없는 요청(구버전 client): 200 { status: 'ok' }                          ← 기존과 완전히 동일, outcome 필드 없음
+```
+
+### Important Semantic Boundaries
+- clientEventId는 "누구의 기록인가"를 절대 결정하지 않는다 — 오직 "같은 사건의 재전송인가"만 판정한다.
+- "동일 논리적 이벤트의 재전송은 새로운 history event가 아니다" — dedup은 append-only 원칙을 위반하지 않고 오히려 "한 사건 = 한 row"라는 append-only의 실제 의도를 보호한다.
+- 기존 row는 어떤 경로로도 UPDATE되지 않는다 — conflict 판정도 SELECT로 조회만 할 뿐 변경하지 않는다.
+
+### Regression Coverage
+`tests/server/learning-event-idempotency.test.ts`(신규, 18 tests) — first delivery(A) / duplicate retry(B) / conflicting payload(C) / conflicting event type(D) / conflicting activity(E) / cross-enrollment 독립성(F) / DB race 시뮬레이션(J) / non-collision 에러 처리 2종 / `deepEqualForIdempotency` 순수 함수 3종 / legacy no-id request(G) / malformed UUID(H) / 유효 UUID 성공 응답 / conflict 409 응답 / identity 필드 방어 회귀(I) / sanitizer 의미론(raw payload 아닌 sanitized payload 기준 비교) 검증. `tests/server/feedback-retry.test.ts`는 인터페이스 변경에 따른 fake 반환값만 최소 수정, 기존 3 tests 그대로 통과.
+
+### Test Result
+```
+Test Files  16 passed (16)
+     Tests  110 passed (110)
+```
+D12-1B 이전 baseline(15 files / 92 tests) 대비 **+1 file / +18 tests**, 기존 92개 전부 회귀 없이 통과.
+
+### Production Migration Verification
+Migration 적용 후 실제 Production schema를 확인: `learning_event` 8→9 컬럼, `client_event_id`(uuid, nullable, default NULL), `learning_event_enrollment_client_event_id_idx`(partial unique index) 정의가 설계(D12-1A/D12-1B)와 정확히 일치함을 확인했다.
+
+### Production Smoke Verification
+사용자가 Production(`https://pico-simulator2.vercel.app/`, 교사 `.../teacher.html`)에서 직접 수동 검증:
+- 기존 test 학생 계정으로 Mission [m2] 진입, 코드 실행 → 실행 완료 → 체크포인트 통과("GP15 LED가 3번 켜졌어요.")
+- 같은 시간대 교사 Timeline에서 `[m2] 부품 추가 / [m2] 코드 실행 / [m2] 실행 완료 / [m2] 체크포인트 · 통과` 기록 확인
+- 결론: migration 적용 이후에도 **old client → new server → new schema → learning_event → teacher Timeline** 경로가 정상 작동함(backward compatibility 확인).
+
+**중요**: 이 smoke는 clientEventId duplicate semantics 자체의 Production 검증이 **아니다** — 현재 client가 아직 clientEventId를 보내지 않으므로, 이번 smoke가 증명하는 것은 "기존 학습 이벤트 흐름이 새 schema/server에서도 정상"이라는 backward compatibility뿐이다. **idempotent retry의 browser-level Production 검증은 D12-1C 이후로 미룬다.**
+
+### Backward Compatibility
+Version-skew 조합 분석(D12-1B Deployment Gate 기준) — old client+old server/schema, old client+new server+old schema(실제로 발생했던 상태), old client+new server+new schema(현재 상태) 전부 **SAFE**로 확인됨. 위험한 조합은 "clientEventId를 보내는 client + old schema"뿐이며, 이는 migration이 이미 적용된 지금 더 이상 발생할 수 없다.
+
+### External Service Boundary
+- Production Supabase migration: **APPLIED**(이번 단계에서 사용자가 직접 Dashboard SQL Editor로 실행)
+- Production Supabase DB write(테스트 목적 직접 삽입): **NONE**(smoke는 실제 학생 학습 흐름을 그대로 이용)
+- Google OAuth/OpenAI 실제 호출: 이번 D12-1B 작업 자체에서는 발생하지 않음(위 smoke의 교사 Timeline 조회는 기존 기능 재사용일 뿐 새 외부 호출 아님)
+
+### Operational Note
+이 프로젝트의 migration 적용 방식은 Supabase CLI push가 아니라 **Dashboard SQL Editor 수동 실행**이다(위 Database Migration 절 참고) — 향후 migration 작업 시 이 운영 방식을 그대로 따른다.
+
+### Deferred
+다음은 D12-1B 범위가 아니며 아직 하지 않았다:
+- durable browser queue / localStorage persistence
+- retry backoff
+- network recovery UI
+- multi-tab client coordination
+- D12-1C clientEventId 생성(client 측)
+- browser-level duplicate retry의 Production smoke
+- Student LLM Coach / class summary / roster edit / AI cost guard(D12-0에서 식별된 다른 축들, 이번 단계와 무관)
+
+**D12-1B는 Server/DB idempotency boundary까지만 완료했다. Client delivery reliability(durable queue 등)는 D12-1C 이후 범위다.**
+
+### Important D12-1C Design Warning
+D12-1A가 제안했던 "학생/session 변경 시 이전 localStorage queue 삭제" 정책은 **D12-1C 구현 착수 전에 반드시 재검토해야 한다.** 이유: misattribution(다른 학생에게 잘못 귀속) 방지는 중요하지만, 아직 전송되지 않은 정상적인 learning event를 세션 전환 시점에 무조건 삭제하는 것은 "학습 기록의 신뢰성"이라는 이 프로젝트의 핵심 원칙과 충돌할 수 있다(삭제=데이터 손실이기 때문). D12-1C를 시작하기 전에 다음을 다시 확정해야 한다: queue ownership, session change, logout, stale queue, retry eligibility, retention, privacy, no-misattribution, no-silent-loss. **아직 구현하지 않는다.**
+
+### Development Rule Going Forward
+향후 learning_event 관련 변경 전/후 최소 검증: `npm test`(16 files/110 tests 이상), 그리고 migration이 수반되는 변경은 반드시 Production 적용 전 이 entry의 Migration Safety 분석 패턴(additive/nullable/partial index/backfill 없음)을 따른다.
+
+### Closure
+D12-1B Server/DB Idempotency Boundary: **CLOSED**
+
+Implementation: `13e204c`
+
+Automated tests: 110 PASS(신규 18 포함)
+
+Production migration: APPLIED + VERIFIED
+
+Production smoke(backward compatibility): PASS
+
+Production smoke(idempotent duplicate/conflict, browser-level): **NOT YET — D12-1C 이후**
+
+### Next Direction
+**D12-1C — Durable Queue Policy Review**(read-only design gate, 구현 전) — 위 "Important D12-1C Design Warning"에서 제기한 정책들을 먼저 확정한 뒤에 durable queue/client clientEventId 생성을 설계한다.
