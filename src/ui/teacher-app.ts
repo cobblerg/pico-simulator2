@@ -326,9 +326,15 @@ const EVENT_LABELS: Record<string, string> = {
   'feedback-retry': '교사 피드백 후 다시 시도 선택',
 };
 
+// resolved는 학생이 "해결되었다"고 스스로 응답/선택했다는 사실만 증명한다
+// — 실제 문제 해결/정답/이해/학습 성공을 검증하지 않는다(AI prompt의
+// resolved 자기보고 원칙과 동일, D11-B Stabilization 1). 라벨에도 그
+// 자기보고 성격이 드러나야 교사가 검증된 사실로 오인하지 않는다. re-observe는
+// "다시 관찰하기로 선택했다"는 행동 사실만 나타내 이미 정확하므로 그대로
+// 둔다.
 const COACH_REFLECTION_CHOICE_LABELS: Record<string, string> = {
   're-observe': '다시 관찰',
-  resolved: '해결됨',
+  resolved: '해결됐다고 응답',
 };
 
 // checkpoint는 ok에 따라 "통과"/"미통과"만 덧붙인다 — ok:true를 "활동
