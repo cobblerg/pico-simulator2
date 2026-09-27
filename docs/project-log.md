@@ -1489,3 +1489,92 @@ deterministic observation: PASS
 privacy/security: PASS
 
 DB/schema changes: NONE
+
+## 2026-09-27 — D11-B Stabilization 1 — Teacher UI & Evidence Language Cleanup
+
+### Status
+CLOSED
+
+### 목적
+D11-B8~B12 Integration Audit에서 발견된 두 가지 통합 friction을 해결한 small stabilization 작업이다. 새 기능 개발이 아니다.
+
+해결한 문제:
+1. Teacher 학생 상세 화면의 정보 순서가 교사의 의사결정 흐름과 어긋나 있던 문제
+2. `coach-reflection`의 `resolved`가 Timeline에서 단순 "해결됨"으로 표시되어 학생 자기보고가 검증된 해결처럼 읽힐 수 있던 evidence-language 문제
+
+### Teacher UI Order
+Before: Timeline → 피드백 이후 관찰 → AI 학습과정 분석 → 교사 피드백
+
+After: Timeline → AI 학습과정 분석 → 교사 피드백 → 피드백 이후 관찰
+
+의도: Evidence → AI Interpretation/Decision Support → Teacher Decision/Feedback → Follow-up Evidence.
+
+변경은 `src/teacher.html`의 기존 DOM block reorder만 수행했다. ID/class/section content/JS selector/API 호출은 변경하지 않았다.
+
+### Evidence Language
+Before: `AI 코치 학습 성찰 · 해결됨`
+
+After: `AI 코치 학습 성찰 · 해결됐다고 응답`
+
+의미: `coach-reflection` payload `{ choice: 'resolved' }`는 학생이 스스로 "해결되었다"고 응답했다는 사실만 증명한다. 실제 문제 해결, 정답, 이해 완료, 학습 성공을 증명하지 않는다. 따라서 Teacher Timeline label 자체에서 self-report 성격이 드러나도록 수정했다. `re-observe` label은 변경하지 않았다.
+
+### Semantic Boundary
+다음은 전부 변경되지 않았다: eventType, `coach-reflection` payload, `learning_event` storage, Timeline sanitizer, AI payload, AI prompt, AI schema. 저장된 evidence 의미는 그대로이며 Teacher UI 표현만 더 정확하게 수정했다.
+
+### Changed Files
+정확히 2개: `src/teacher.html`, `src/ui/teacher-app.ts`
+
+Feature/Stabilization commit:
+- full: d01e09e5709e5a8164208e91c0eef9337703cdad
+- short: d01e09e
+- message: chore: refine teacher feedback loop UI
+- diff: 2 files changed, 29 insertions(+), 23 deletions(-)
+
+### Explicitly Unchanged
+Teacher Timeline API, Teacher authorization, AI analysis, AI prompt/schema, teacher feedback save/edit, student feedback, feedback-retry, post-feedback observation calculation, learning-event logging, student workspace, DB/schema — 전부 무변경.
+
+DB migration: NONE
+
+new API: NONE
+
+new event: NONE
+
+### Local Validation
+`npm run build` PASS.
+
+`dist/teacher.html` 확인: Timeline → AI → Feedback → PFO 순서 PASS. 새 label "해결됐다고 응답" bundle 반영 PASS. 구 resolved label "해결됨" 제거 확인 PASS.
+
+### Production UI Verification
+PASS.
+
+확인 1: 기존 `coach-reflection` resolved Timeline event가 `AI 코치 학습 성찰 · 해결됐다고 응답`으로 표시됨. PASS.
+
+확인 2: Teacher 학생 상세 화면의 전체 정보 순서가 Timeline → AI 학습과정 분석 → 교사 피드백 → 피드백 이후 관찰로 표시됨. PASS.
+
+새 student action이나 새 coach event를 생성하지 않고 기존 Production 기록으로 검증했다.
+
+### Closure
+D11-B Stabilization 1: CLOSED
+
+Implementation: d01e09e
+
+Build: PASS
+
+Production UI Verification: PASS
+
+Evidence-language correction: PASS
+
+Teacher information-order correction: PASS
+
+Privacy/security regression: NONE
+
+DB/schema changes: NONE
+
+### Next Direction
+새 기능 D11-B13으로 바로 진행하지 않는다.
+
+D11-B8~B12 Integration Audit에서 가장 큰 장기 구조적 위험으로 확인된 "자동화된 회귀 테스트 부재"를 다음 안정화 작업에서 검토한다.
+
+다음 후보: D11-B Regression Test Gate
+
+목적: 기존 scratch/manual validation 중 핵심 보안·event semantics·feedback ownership·post-feedback observation 시나리오를 repository에 영속적인 regression test로 승격할 수 있는지 설계한다. 이번 docs 단계에서는 test framework를 설치하거나 test 코드를 만들지 않았다.
