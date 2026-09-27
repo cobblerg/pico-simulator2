@@ -1838,3 +1838,201 @@ Real Supabase/OpenAI: NOT USED
 - Stabilization 2 browser automation: LATER
 - Playwright: LATER, preferably after CI/test workflow need is clear
 - 새 feature: NOT STARTED
+
+## 2026-09-27 — D11-C Teacher Class & Roster Management
+
+### Status
+CLOSED (code-level) — staging smoke test pending
+
+### 목적
+교사가 Supabase SQL Editor 없이 PicoSim2 안에서 직접 학급을 생성하고 학생 명단을 등록할 수 있게 하여, D11-B까지 완성된 학습 → 학습기록 → 교사 Timeline → AI 분석 → 교사 피드백 → 학생 피드백 확인 흐름의 유일한 미완성 진입점(교사 학급/명단 생성)을 실제 제품 경로로 연결했다. 이 축은 2026-09-27에 진행된 "PicoSim2 — Full Project Status Audit" §J(Next Development Axis Candidates)에서 최우선 축(Axis 1)으로 식별된 것이다.
+
+### Baseline
+D11-C 시작 baseline: `5d93b905bcc333abf895751a6b8c5494549cc14a`(short `5d93b90`)
+
+### Stages
+
+| Stage | Commit | 핵심 |
+|---|---|---|
+| C0 — Product Contract | (문서만, commit 없음) | classCode/roster/예외학생/authorization/transaction 계약 확정(읽기 전용 조사) |
+| C1 — Student Identity Regression Baseline | `947ab04` | 기존 student entry identity contract를 17개 테스트로 고정(회귀 보호, production 무변경) |
+| C2 — Class Creation Server Boundary | `d033ed6` | 승인 교사의 학급 생성(`POST /api/teacher/classes`), 시스템 생성 6자리 classCode, teacher_class ownership, compensation |
+| C3 — Roster Management Server Boundary | `dc77107` | 단건/bulk 통일 `entries[]` 계약(`POST /api/teacher/classes/:classId/students`), all-or-nothing validation, 중복/race 방어, compensation |
+| C4 — Teacher Class & Roster UI | `605b040` | 학급 생성 폼, classCode 표시, 단건/bulk 등록 UI, 순수 파서(`teacher-roster-parser.ts`) |
+| C5 — Exceptional Student Recovery | `989d901` | 학생용 generic 회복 안내 문구, 교사 즉석 등록 안내, enumeration resistance 유지 |
+| C6 — End-to-End Stabilization | `d8d39e2` | Pilot vertical slice 전 구간 identity 추적, **multi-row INSERT RETURNING 순서 의존성 제거**(실제 결함 수정), 통합 테스트 2건 추가, README 환경변수 문서화 |
+| C7 — Regression Gate & Project Closure | (이 entry) | 전체 회귀 재검증 + 문서화 + closure |
+
+### Student Identity Contract
+- roster-first: 교사 사전 등록이 기본 경로, 학생 자가 생성 없음
+- 학생 자가 등록(self-registration) 금지 — 어떤 코드 경로도 무인증 상태에서 Student/Enrollment를 생성하지 않는다
+- `(class_id, student_no)` class-scoped invariant — studentNo는 global identity가 아니며 DB UNIQUE 제약으로 보장됨(migration 20260925090000)
+- 이름은 정확히 등록된 이름과 일치해야 하며(strict equality, fuzzy matching 없음), 불일치는 name-mismatch로 분류되지만 public 응답에서는 노출되지 않음
+- public 응답은 항상 `{status:'rejected'}` 하나로 접힘(enumeration resistance, D11-C1이 4가지 내부 사유 전부를 회귀 보호)
+- 재입장 시 기존 studentId/enrollmentId를 재사용(멱등), 새 row를 만들지 않음
+
+### Teacher Class Contract
+- 승인된 교사(teacher 테이블에 관리자가 수동 등록한 teacherId)만 학급 생성 가능
+- classCode는 교사가 입력하지 않고 시스템이 생성(6자리, 혼동 문자 0/O/1/I 제외한 대문자+숫자)
+- classCode 충돌은 정상적으로 예상 가능한 상황으로 취급 — 최대 5회 재시도, 무한 루프 없음, unique_violation(Postgres 23505)만 충돌로 인식
+- classId가 durable identity, classCode는 재발급 가능한 변경 속성(student_session은 classId만 담아 재발급에 영향받지 않음)
+- 학급 생성은 school_class + teacher_class 두 row로 구성되며, teacher_class 생성 실패 시 방금 만든 school_class를 보상 삭제
+
+### Roster Contract
+- 서버 계약은 `entries: [{studentNo, name}]` 하나로 통일 — 단건도 bulk와 같은 경로(entries 길이 1)
+- raw pasted text 파싱은 서버가 아니라 교사 브라우저(C4 `teacher-roster-parser.ts`, 순수 함수)의 책임
+- all-or-nothing validation — 하나라도 invalid하면 전체 write 없음, 구조화된 `{index, studentNo, reason}` 오류 반환
+- 중복 방어 2단계: 애플리케이션 사전 조회(같은 학급 내 기존 studentNo + batch 내부 중복) + DB UNIQUE(class_id, student_no) 최종 방어선
+- **RETURNING-order 안전화(D11-C6에서 실제로 발견·수정한 결함)**: 초기 구현은 multi-row `INSERT ... RETURNING`의 반환 행 순서가 입력 순서와 같다고 가정해 studentId/enrollmentId를 배열 index로 대응시켰다 — 이 순서는 Postgres/Supabase 어느 쪽도 공식적으로 보장하지 않아 이론상 identity mis-link(학번 A의 enrollment가 실제로는 학번 B의 studentId를 가리킴) 위험이 있었다. `crypto.randomUUID()`로 studentId/enrollmentId를 insert 전에 애플리케이션이 직접 생성해 어떤 DB 응답 순서에도 의존하지 않도록 수정했다(스키마 변경/migration/RPC 없음).
+- student/enrollment 각각 한 번의 multi-row INSERT(Postgres 단일 문장 원자성 활용), 실패 시 이번 요청이 만든 studentId만 보상 삭제(다른 요청/기존 row에 영향 없음)
+
+### Exceptional Student Contract
+- 명단에 없는 학생의 자동 생성 없음, pending/승인 큐 같은 별도 시스템 없음
+- 학생 화면은 모든 rejected case에 동일한 generic 안내(`STUDENT_ENTRY_REJECTED_MESSAGE`)만 표시 — 실패 사유를 추측해 다르게 보여주지 않음
+- 교사가 C3/C4의 정상 단건 등록 기능을 그대로 사용해 즉석 등록(별도 워크플로 없음)
+- 학생은 같은 dialog/form에서 새로고침 없이 재시도 가능 — `enterStudent()`가 매번 DB를 실시간 조회하므로 등록 직후 accepted 가능함을 코드로 확인(D11-C6 §7)
+
+### Regression Coverage
+- 총 92 tests, 15 test files, 0 failures(2026-09-27 최종 재실행 기준)
+- Student identity: Case 1~6b + 공개 경계 8종(`tests/server/student-entry-domain.test.ts`, `tests/server/student-entry-handler.test.ts`)
+- Class creation: classCode 생성 2종 + A/E/F/G/H/I 6종(`tests/server/teacher-class-creation.test.ts`) + handler 5종(`tests/server/teacher-classes-handler.test.ts`)
+- Roster: A/B/C/D/E/F/G/K/L/M/N 12종(`tests/server/teacher-roster-creation.test.ts`) + handler 12종(`tests/server/teacher-students-handler.test.ts`)
+- Roster ↔ Student entry 통합: 2종(`tests/server/roster-student-entry-integration.test.ts`, D11-C6 신규)
+- Bulk paste parser: 10종(`tests/ui/teacher-roster-parser.test.ts`)
+- 학생 회복 안내 문구: 4종(`tests/ui/student-entry-message.test.ts`)
+- D11-B 기존 17종(feedback/AI/timeline/teacher-in-loop) 회귀 없음
+
+### Regression Matrix
+
+| Boundary | Protection |
+|---|---|
+| Valid roster student entry | automated test(Case 1) |
+| Name mismatch | automated test(Case 2, 6b) |
+| Unknown studentNo | automated test(Case 3) |
+| Unknown classCode | automated test(Case 4) |
+| Re-entry identity reuse | automated test(Case 5) |
+| Cross-class studentNo isolation | automated test(Case 6) |
+| Enumeration resistance | automated test(handler enumeration + data-integrity-error) |
+| Malformed student entry | automated test(handler malformed 4종) |
+| Teacher class creation | automated test(A) |
+| classCode collision | automated test(E, F) |
+| class ownership creation | automated test(A, handler wiring) |
+| Class creation compensation | automated test(H, I) |
+| Single roster registration | automated test(A) |
+| Bulk roster registration | automated test(B) |
+| Duplicate roster rejection | automated test(D, E) |
+| Cross-class duplicate isolation | automated test(F) |
+| Roster compensation | automated test(L, M, N) |
+| RETURNING-order-safe mapping | automated/stabilization test(A, B, handler wiring — 응답 필드가 실제 insert payload와 일치함을 직접 검증) |
+| Bulk parser | automated test(10종) |
+| Student recovery message | automated test(4종) |
+
+### Test Gate
+```
+Test Files  15 passed (15)
+     Tests  92 passed (92)
+```
+Failed: 0
+
+### Build Result
+- Student/main build(dist/index.html, dist/picosim-artifact.html): PASS
+- Teacher build(dist/teacher.html): `PUBLIC_SUPABASE_URL`/`PUBLIC_SUPABASE_ANON_KEY` 환경변수 미설정으로 FAIL(코드 회귀 아님 — 환경 제약, README에 문서화 완료)
+- Compile verification: scratch-only fake define으로 `teacher-app.ts`/신규 server 파일 esbuild 번들 성공 확인(fake 값은 repository에 기록하지 않음)
+
+### External Service Boundary
+- Production Supabase write(class/roster/student/enrollment): **NOT EXECUTED**
+- Google OAuth 실제 로그인: **NOT EXECUTED**
+- Production DB read/write: **NOT EXECUTED**
+- Real OpenAI call: **NOT EXECUTED**
+- 모든 D11-C server test는 fake SupabaseClient/in-memory fixture 기반이다.
+
+DB/schema 변경: NONE. Migration: NONE.
+
+### Manual Staging Smoke Test Status
+다음 항목은 이번 D11-C(C0~C7) 전 구간에서 **실행되지 않았다** — PASS로 표시하지 않는다.
+
+- Google OAuth 실제 로그인 — NOT EXECUTED — staging smoke test required
+- 실제 Supabase class write — NOT EXECUTED — staging smoke test required
+- 실제 Supabase roster write — NOT EXECUTED — staging smoke test required
+- 실제 student entry against staging DB — NOT EXECUTED — staging smoke test required
+- 실제 learning_event write — NOT EXECUTED — staging smoke test required
+- 실제 OpenAI analysis call — NOT EXECUTED — staging smoke test required
+- 실제 teacher feedback write/read — NOT EXECUTED — staging smoke test required
+- 실제 student follow-up(다시 해보기) — NOT EXECUTED — staging smoke test required
+- 실제 브라우저 시각 확인(Chrome 확장 미연결) — NOT EXECUTED — staging smoke test required
+
+### Pilot Smoke Test Checklist(다음 단계에서 사용자가 직접 수행)
+
+**Teacher setup**
+- [ ] Teacher Google login succeeds
+- [ ] Teacher approved
+- [ ] Create class
+- [ ] Generated classCode visible
+- [ ] Add one student
+- [ ] Bulk-add several students
+- [ ] Roster displays correctly
+
+**Student normal flow**
+- [ ] Enter classCode
+- [ ] Enter studentNo
+- [ ] Enter registered name
+- [ ] Entry accepted
+- [ ] Simulator opens
+
+**Exceptional student**
+- [ ] Unregistered student rejected generically
+- [ ] No reason-specific identity information exposed
+- [ ] Teacher adds student
+- [ ] Student retries without page reload
+- [ ] Entry accepted
+
+**Learning record**
+- [ ] Student completes activity/checkpoint
+- [ ] learning_event recorded
+- [ ] Teacher Timeline displays event
+
+**AI analysis**
+- [ ] Teacher requests AI analysis
+- [ ] OpenAI request succeeds
+- [ ] Analysis is displayed
+- [ ] Failure handling is acceptable if provider unavailable
+
+**Teacher feedback**
+- [ ] Teacher saves feedback
+- [ ] Feedback appears in student flow
+
+**Student follow-up**
+- [ ] Student reads feedback
+- [ ] Student chooses retry/follow-up
+- [ ] Subsequent learning observation/event is recorded
+
+### Deferred
+- Staging smoke test(위 체크리스트) — 다음 단계
+- classCode regeneration(재생성 API/UI)
+- 학급/학생 edit·remove lifecycle(이름/학번 수정, 삭제)
+- 더 넓은 교사 analytics(학급 단위 대시보드, DB-01/04)
+- Digital Society/multi-subject content 확장
+- 실제 LLM 기반 Student AI Coach(현재는 결정론적 스캐폴드)
+- CSV import/export, QR 코드
+
+### Closure
+D11-C Teacher Class & Roster Management: **CODE-LEVEL CLOSED**
+
+Implementation commits: `947ab04` → `d033ed6` → `dc77107` → `605b040` → `989d901` → `d8d39e2`
+
+Automated tests: 92 PASS
+
+Build: student/main PASS, teacher build environment-blocked(코드 아님)
+
+DB/schema: NONE 추가(기존 grant로 충분)
+
+Migration: NONE
+
+Real Supabase/Google OAuth/OpenAI: NOT USED
+
+**Pilot V1 code-complete for the current Pico vertical slice; staging smoke test pending.**
+
+("production ready"/"fully verified"/"pilot completed" 같은 표현은 실제 브라우저·외부 서비스 검증 전이므로 사용하지 않는다.)
+
+### Next Direction
+**Pilot Staging Smoke Test** — 위 체크리스트를 실제 Supabase 프로젝트 + 실제 Google 계정 + 실제 OpenAI key가 설정된 staging 환경에서 사람이 직접 수행한다. 이 검증이 끝나기 전까지 새 기능 번호(D11-D 등)를 임의로 시작하지 않는다.
