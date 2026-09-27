@@ -39,6 +39,9 @@ header h1{font-size:20px;margin:0 0 4px}
 .t-timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .t-timeline li{padding:5px 2px;border-bottom:1px solid var(--line);font-size:13px}
 .t-timeline li:last-child{border-bottom:none}
+#t-timeline-list{max-height:240px;overflow-y:auto}
+#t-timeline-list.t-timeline-list-expanded{max-height:65vh}
+.t-timeline-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .row{display:flex;gap:8px;align-items:center}
 textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);resize:vertical}
 .t-feedback-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
@@ -83,7 +86,10 @@ textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line)
       </table>
     </div>
 
-    <p id="t-timeline-student" class="eyebrow"></p>
+    <div class="t-timeline-head">
+      <p id="t-timeline-student" class="eyebrow"></p>
+      <button id="t-timeline-expand" class="btn ghost small" type="button" aria-expanded="false" aria-controls="t-timeline-list">확대</button>
+    </div>
     <div id="t-timeline-loading" hidden><p class="msg">학습 기록을 불러오는 중...</p></div>
     <div id="t-timeline-empty" hidden><p class="muted">아직 기록된 학습 활동이 없습니다.</p></div>
     <div id="t-timeline-list" hidden>

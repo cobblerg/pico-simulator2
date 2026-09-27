@@ -81,6 +81,7 @@ const timelineLoadingEl = el<HTMLElement>('t-timeline-loading');
 const timelineEmptyEl = el<HTMLElement>('t-timeline-empty');
 const timelineListEl = el<HTMLElement>('t-timeline-list');
 const timelineUl = el<HTMLUListElement>('t-timeline-ul');
+const timelineExpandBtn = el<HTMLButtonElement>('t-timeline-expand');
 const pfoSectionEl = el<HTMLElement>('t-pfo-section');
 const pfoEmptyEl = el<HTMLElement>('t-pfo-empty');
 const pfoResultEl = el<HTMLElement>('t-pfo-result');
@@ -433,6 +434,7 @@ function resetDashboardState(): void {
   classesUl.innerHTML = '';
   studentsTbody.innerHTML = '';
   timelineUl.innerHTML = '';
+  collapseTimeline();
   feedbackUl.innerHTML = '';
   aiObservationsUl.innerHTML = '';
   aiCheckPointsUl.innerHTML = '';
@@ -528,6 +530,24 @@ function renderTimeline(events: TimelineEvent[]): void {
   }
 }
 
+// D11-B Stabilization 2: 학생 전환 시 항상 compact(축소) 상태로 되돌린다 —
+// 이전 학생에서 [확대]해 둔 상태가 새 학생 화면에 남으면 안 된다(요구사항
+// §10). 순수 CSS class/button text/aria 토글일 뿐이라 Timeline 데이터나
+// scroll 위치 자체를 건드리지 않는다.
+function collapseTimeline(): void {
+  timelineListEl.classList.remove('t-timeline-list-expanded');
+  timelineExpandBtn.textContent = '확대';
+  timelineExpandBtn.setAttribute('aria-expanded', 'false');
+}
+
+// Timeline fetch가 성공해 render가 끝나고 setApprovedSubState()로 실제
+// 화면에 보이게 된 뒤에만 호출해야 한다 — hidden 상태에서는 scrollHeight가
+// 0으로 계산되어 아무 효과가 없다(요구사항 §8/§9: render 완료 전 실행 금지,
+// 확대/축소 토글 때는 호출하지 않음 — 그때는 이 함수를 다시 부르지 않는다).
+function scrollTimelineToLatest(): void {
+  timelineListEl.scrollTop = timelineListEl.scrollHeight;
+}
+
 function showFeedbackError(message: string, retry: () => void): void {
   feedbackErrorMsgEl.textContent = message;
   feedbackRetryAction = retry;
@@ -586,6 +606,7 @@ async function selectClass(classId: string): Promise<void> {
   selectedStudentId = null;
   currentStudents = [];
   timelineStudentEl.textContent = '';
+  collapseTimeline();
   feedbackSectionEl.hidden = true;
   currentFeedback = [];
   resetFeedbackForm();
@@ -643,6 +664,7 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
   renderStudentList(); // 선택 강조 갱신 — 목록 자체는 그대로 유지된다.
   const student = currentStudents.find((s) => s.studentId === studentId);
   timelineStudentEl.textContent = student ? `${student.studentNo}번 ${student.name}` : '';
+  collapseTimeline();
   feedbackSectionEl.hidden = false;
   currentFeedback = [];
   resetFeedbackForm();
@@ -699,6 +721,9 @@ async function selectStudent(classId: string, studentId: string): Promise<void> 
     renderTimeline(body.events);
     renderPostFeedbackObservation(body.postFeedbackObservation);
     setApprovedSubState(body.events.length === 0 ? 'empty-timeline' : 'timeline');
+    // setApprovedSubState()가 timelineListEl.hidden을 false로 바꾼 뒤에만
+    // 호출한다 — hidden 상태에서는 scrollHeight가 0이라 스크롤이 무의미하다.
+    if (body.events.length > 0) scrollTimelineToLatest();
   } catch {
     if (isStale()) return;
     showApprovedError('학습 기록을 불러오지 못했습니다.', () => void selectStudent(classId, studentId));
@@ -968,6 +993,16 @@ feedbackCancelBtn.addEventListener('click', () => {
 
 feedbackSaveBtn.addEventListener('click', () => {
   void saveFeedback();
+});
+
+// D11-B Stabilization 2: [확대]/[축소] 토글. 같은 #t-timeline-list/#t-timeline-ul을
+// 그대로 두고 CSS class만 바꾼다 — 새 fetch/재렌더/scrollTop 강제 이동
+// 없음(요구사항 §6/§7). 같은 DOM 요소이므로 브라우저가 scroll 위치를
+// 그대로 유지한다.
+timelineExpandBtn.addEventListener('click', () => {
+  const expanded = timelineListEl.classList.toggle('t-timeline-list-expanded');
+  timelineExpandBtn.textContent = expanded ? '축소' : '확대';
+  timelineExpandBtn.setAttribute('aria-expanded', String(expanded));
 });
 
 aiAnalyzeBtn.addEventListener('click', () => {
