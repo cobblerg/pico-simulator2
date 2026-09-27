@@ -66,6 +66,24 @@ import { loadStudentFeedback } from './student-feedback';
 
 const SESSION_KEY = 'picosim:student-context';
 
+// D11-C5: 서버(student-entry-handler.ts)는 이미 name-mismatch/enrollment-
+// not-found/class-not-found/data-integrity-error 4가지 내부 실패를 전부
+// 동일한 `{status:'rejected'}`로 접어 응답한다(D11-C0/C1 enumeration
+// resistance) — 이 파일도 그 경계를 그대로 존중해 단 하나의 안내 문구만
+// 쓴다. 실패 사유를 추측해 다르게 보여주지 않는다("등록되지 않은
+// 학생입니다"/"이름이 틀렸습니다" 등은 절대 만들지 않는다) — 그런 구분
+// 자체가 classCode/studentNo/name 존재 여부를 외부에 드러내는 enumeration
+// oracle이 되기 때문이다. 유일한 추가는 "해결 방법"(교사에게 확인 요청)
+// 안내뿐이며, 이 문구는 어떤 identity 정보도 담지 않는다.
+//
+// export하는 이유는 이 상수/문구가 바뀌었을 때 "여전히 유일한 한 문구인가"
+// "내부 reason 문자열이 섞여 들어가지 않았는가"를 pure 문자열 테스트로
+// 고정하기 위함이다(tests/ui/student-entry-message.test.ts) — 새 DOM test
+// 환경을 추가하지 않고도 이 파일을 직접 import해 검증할 수 있다(이
+// 파일은 teacher-app.ts와 달리 모듈 최상단에서 document를 호출하지 않는다).
+export const STUDENT_ENTRY_REJECTED_MESSAGE =
+  '입력 정보를 확인해 주세요. 계속 입장할 수 없다면 선생님께 학급 코드·학번·등록 이름을 확인해 달라고 요청하세요.';
+
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
@@ -343,7 +361,7 @@ export function initStudentEntryGate(): void {
         return;
       }
 
-      errorEl.textContent = '입력 정보를 확인해 주세요.';
+      errorEl.textContent = STUDENT_ENTRY_REJECTED_MESSAGE;
     } catch {
       errorEl.textContent = '연결에 문제가 있어요. 잠시 후 다시 시도해 주세요.';
     } finally {
