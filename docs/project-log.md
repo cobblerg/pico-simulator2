@@ -964,3 +964,112 @@ Production E2E에서 확인된 예: `AI 코치 학습 성찰 · 해결됨`
 - checkpoint/mission 판정 로직 변경 없음
 - coach-retry는 Run 실행 자체를 증명하지 않음 (retry gate transition만 기록)
 - Run / Real Run / Stop / Reset 변경 없음
+
+## 2026-09-27 — D11-B9 — Teacher AI Learning Insight
+
+### Status
+CLOSED
+
+### 구현 목적
+Teacher Timeline의 실제 learning events와 AI Coach events(D11-B8)를 기반으로, 교사가 학생의 문제 해결 과정을 빠르게 이해할 수 있는 구조화된 AI 학습과정 분석을 제공한다. 새 AI 분석 기능을 만드는 것이 아니라, 기존 `gpt-5-mini` / Responses API / Structured Outputs 기반 분석 기능(0-D11-A)을 확장한 것이다.
+
+### 최종 분석 구조
+AI 출력은 다음 6개 필드로 구성된다.
+- 학습과정 요약 (`summary`)
+- 관찰 근거 (`observations` + `evidence`)
+- 도움 활용 (`helpUsage` + `evidence`)
+- 재시도·변화 (`retryChange` + `evidence`)
+- 교사 확인 포인트 (`teacherCheckPoints`)
+- AI 피드백 초안 (`suggestedFeedback`)
+
+`suggestedFeedback`은 기존 "피드백 입력란에 가져오기"(`aiCopyBtn`) 기능과의 호환성을 위해 그대로 유지했다.
+
+### 교육적 안전 원칙
+- 관찰 가능한 learning events를 근거로만 분석한다.
+- evidence는 `E1, E2, ...` 형식의 실제 입력 event seq에만 연결된다(모델이 지어낸 값은 조용히 제거).
+- 학생의 능력/성향/지능/노력/의도를 단정하지 않는다.
+- 채점/등급화를 하지 않는다.
+- 단일 event 하나만으로 원인을 추론하지 않는다.
+- 힌트 사용을 능력 부족으로 해석하지 않는다.
+- `coach-retry`는 실제 Run 실행의 증거가 아니다.
+- `coach-reflection`의 `resolved`는 "학생이 해결되었다고 자기보고함"이며 객관적 이해/해결 검증이 아니다.
+- `teacherCheckPoints`는 교사가 확인할 질문/제안 형태여야 하며 판정문이 아니다.
+
+### Privacy / Security Boundary
+OpenAI 입력에는 다음이 없다:
+- 학생 이름
+- studentId
+- classId
+- enrollmentId
+- 전체 코드
+
+입력 구조는 `seq` / `activityId` / `eventType` / minimized `payload`로 고정되며, `store:false`를 유지한다. student attribution/authorization은 기존 서버 경계(`teacher-session.ts`/`teacher-authorization.ts`)를 변경하지 않았다. DB/schema/Supabase migration 변경 없음.
+
+`checkpoint.msg` privacy audit 결과: 학생 자유 텍스트가 아니라 시스템이 생성하는 고정 한국어 템플릿 + 시뮬레이터 계산값/고정 부품명만 포함하는 것으로 확인됨(`src/ui/app.ts`의 `showCheck()` 호출부 전수 확인).
+
+### BUG-D11-B9-AI-Output-01
+Production 첫 검증에서 HTTP 500, server log `malformed AI output: invalid JSON` 발생. 기존 코드가 OpenAI Responses API의 `response.status`/`incomplete_details`를 검사하지 않아 incomplete response와 malformed JSON을 구분하지 못했던 문제였다.
+
+**수정**: `response.status === 'incomplete'`를 `JSON.parse` 이전에 감지하고 `incomplete_details.reason`을 서버 로그에 기록하도록 개선(`assertResponseComplete()`). 브라우저에는 기존 generic error UX 그대로 유지.
+
+**Commit**: 04809235d9d7a7a229574ee14adab343ae832628
+
+### BUG-D11-B9-AI-Output-02
+BUG-01 배포 후 Production에서 실제 `incomplete AI output: max_output_tokens`를 확인 — output token budget 부족이 Production에서 확정됨.
+
+`MAX_OUTPUT_TOKENS`: `2000` → BUG-01 단계에서 `3000` → Production `max_output_tokens` 확인 후 `4000`(최종값).
+
+**Commit**: e85c4a0058961aeea6ab4dc0a3fd624a97ba7052
+
+### BUG-D11-B9-AI-Output-03
+`4000` 배포 후 Production에서 `Request timed out.` 확인. Production log와 설치된 OpenAI SDK 구현(`node_modules/openai`의 `APIConnectionTimeoutError` 기본 메시지 일치) 확인 결과, OpenAI SDK request timeout(25초)이 원인이며 별도 `AbortController`/manual timeout은 없음을 확인했다.
+
+`AI_TIMEOUT_MS`: `25_000` → `45_000`(최종값).
+
+**Commit**: 47acc8c47f1cfed43e0879fd80e10dfa3b83c59d
+
+### Production E2E
+`https://pico-simulator2.vercel.app/teacher.html`에서 실제 Teacher AI Analysis 검증 완료.
+
+확인된 내용:
+- 학습과정 요약 정상
+- 관찰 근거 + evidence 정상
+- 도움 활용 정상
+- 재시도·변화 정상
+- 교사 확인 포인트 정상
+- AI 피드백 초안 정상
+- m2 LED 문제 해결 과정 분석 정상
+- m6 servo 미통과 과정 구분 정상
+- hint 사용을 부정적 능력 평가로 해석하지 않음
+- 학생 자기보고와 실제 Run/checkpoint 기록을 구분
+
+최종 안정성 확인: Production 분석 성공 약 40초, 동일 조건 추가 분석 성공 약 35초 — 45초 timeout 내에서 2회 연속 성공.
+
+### Known Follow-Up
+D11-B9 blocker는 아니지만 후속 최적화 후보로 기록한다: Teacher AI Analysis latency. 현재 실제 Production에서 약 35~40초가 소요된다.
+
+향후 별도 성능 개선에서 검토 가능:
+- `MAX_EVENTS_FOR_AI = 50` 적정성
+- event input 압축
+- prompt 길이
+- output 구조/길이
+- activity 범위 전략
+
+이번 D11-B9 close에서 위 항목은 구현하지 않는다.
+
+또한 internal activityId(`m1`/`m2`/`m6`) 표시가 교사에게 혼동을 줄 수 있으므로, 향후 human-readable mission label UX 개선 후보로 기록한다.
+
+### Closure
+D11-B9: CLOSED
+
+Feature commit:
+- e4a106d2f0ba2965f328c9d86c8e3a0fdb669b71 feat: expand teacher AI learning insights
+
+Stabilization commits:
+- 04809235d9d7a7a229574ee14adab343ae832628 fix: handle incomplete AI analysis output
+- e85c4a0058961aeea6ab4dc0a3fd624a97ba7052 fix: increase AI analysis output budget
+- 47acc8c47f1cfed43e0879fd80e10dfa3b83c59d fix: extend AI analysis request timeout
+
+Production E2E: PASS
+
+Known follow-up: AI analysis latency optimization
