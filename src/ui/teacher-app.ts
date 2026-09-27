@@ -106,6 +106,9 @@ const aiRetryBtn = el<HTMLButtonElement>('t-ai-retry');
 const aiResultEl = el<HTMLElement>('t-ai-result');
 const aiSummaryEl = el<HTMLElement>('t-ai-summary');
 const aiObservationsUl = el<HTMLUListElement>('t-ai-observations');
+const aiHelpUsageEl = el<HTMLElement>('t-ai-help-usage');
+const aiRetryChangeEl = el<HTMLElement>('t-ai-retry-change');
+const aiCheckPointsUl = el<HTMLUListElement>('t-ai-checkpoints');
 const aiSuggestedEl = el<HTMLElement>('t-ai-suggested');
 const aiCopyBtn = el<HTMLButtonElement>('t-ai-copy');
 
@@ -250,8 +253,17 @@ type TeacherFeedbackWriteResponse = { status: 'ok'; feedback: TeacherFeedbackIte
 // 검증된 enrollment에 학습 기록이 하나도 없을 때만 null이다(서버가
 // OpenAI를 호출하지 않고 즉시 반환하는 정상적인 빈 상태, 0-D11-A §8) —
 // 그 외의 모든 실패(인증/권한/provider 오류 등)는 non-200 응답으로 온다.
+// D11-B9: helpUsage/retryChange/teacherCheckPoints 3개 필드 추가.
 type AIObservation = { text: string; evidence: string[] };
-type AIAnalysisResultUI = { summary: string; observations: AIObservation[]; suggestedFeedback: string };
+type AITextWithEvidence = { text: string; evidence: string[] };
+type AIAnalysisResultUI = {
+  summary: string;
+  observations: AIObservation[];
+  helpUsage: AITextWithEvidence;
+  retryChange: AITextWithEvidence;
+  teacherCheckPoints: string[];
+  suggestedFeedback: string;
+};
 type AIAnalysisResponse = { status: 'ok'; analysis: AIAnalysisResultUI | null } | { status: 'not_approved' };
 
 // 실제로 존재하는 24개 event_type만 다룬다(learning-event-handler.ts의
@@ -387,7 +399,10 @@ function resetDashboardState(): void {
   timelineUl.innerHTML = '';
   feedbackUl.innerHTML = '';
   aiObservationsUl.innerHTML = '';
+  aiCheckPointsUl.innerHTML = '';
   aiSummaryEl.textContent = '';
+  aiHelpUsageEl.textContent = '';
+  aiRetryChangeEl.textContent = '';
   aiSuggestedEl.textContent = '';
 }
 
@@ -720,18 +735,37 @@ function showAIError(message: string, retry: () => void): void {
   setAISubState('error');
 }
 
-// summary/observation text/suggestedFeedback 모두 textContent로만 쓴다 —
-// AI가 생성한 텍스트라도 예외 없이 XSS 방지 원칙(0-D10-E 확정 요구사항
-// 15, renderFeedbackList()와 동일)을 적용한다. evidence는 서버가 이미
-// 입력에 실제로 존재했던 E1/E2/... 순번만 남기도록 검증했으므로(0-D11-A
+// summary/observation text/helpUsage/retryChange/teacherCheckPoints/
+// suggestedFeedback 모두 textContent로만 쓴다 — AI가 생성한 텍스트라도
+// 예외 없이 XSS 방지 원칙(0-D10-E 확정 요구사항 15, renderFeedbackList()와
+// 동일)을 적용한다. innerHTML은 목록을 비울 때(='')만 쓰고 AI 텍스트를
+// 넣는 데는 쓰지 않는다. evidence는 서버가 이미 입력에 실제로 존재했던
+// E1/E2/... 순번만 남기도록 검증했으므로(0-D11-A/D11-B9
 // sanitizeAnalysisResult), 여기서는 그대로 괄호 안에 붙여 보여주기만 한다.
+function textWithEvidence(t: AITextWithEvidence): string {
+  return t.evidence.length > 0 ? `${t.text} (근거: ${t.evidence.join(', ')})` : t.text;
+}
+
+// D11-B9: helpUsage/retryChange/teacherCheckPoints 중 무엇이 비어 있어도
+// (예: 도움 요청 기록이 없어 서버가 text만 채우고 evidence는 빈 배열로
+// 준 경우, 혹은 teacherCheckPoints가 빈 배열인 경우) 화면이 깨지지 않아야
+// 한다(요구사항 §10) — 문단은 그대로 비워 두고("" textContent), 목록은
+// 항목 없이 빈 <ul>로 둔다.
 function renderAIAnalysis(analysis: AIAnalysisResultUI): void {
   aiSummaryEl.textContent = analysis.summary;
   aiObservationsUl.innerHTML = '';
   for (const o of analysis.observations) {
     const li = document.createElement('li');
-    li.textContent = o.evidence.length > 0 ? `${o.text} (근거: ${o.evidence.join(', ')})` : o.text;
+    li.textContent = textWithEvidence(o);
     aiObservationsUl.appendChild(li);
+  }
+  aiHelpUsageEl.textContent = textWithEvidence(analysis.helpUsage);
+  aiRetryChangeEl.textContent = textWithEvidence(analysis.retryChange);
+  aiCheckPointsUl.innerHTML = '';
+  for (const cp of analysis.teacherCheckPoints) {
+    const li = document.createElement('li');
+    li.textContent = cp;
+    aiCheckPointsUl.appendChild(li);
   }
   aiSuggestedEl.textContent = analysis.suggestedFeedback;
 }
