@@ -299,7 +299,16 @@ type AIAnalysisResponse = { status: 'ok'; analysis: AIAnalysisResultUI | null } 
 // ALLOWED_EVENT_TYPES와 정확히 같은 집합) — 새 event type을 여기서 만들어
 // 내지 않는다. 매핑에 없는 값이 방어적으로 와도 raw event_type을 그대로
 // 보여준다(폴백일 뿐, 정상 경로에서는 발생하지 않는다).
-const EVENT_LABELS: Record<string, string> = {
+// D11-B Regression Test Gate: export는 semantic unit test(tests/ui/*)를
+// 위한 가시성 변경일 뿐이다 — 이 파일은 esbuild가 IIFE로 번들하는 entry
+// point라 이 export가 실제 dist 산출물의 동작을 바꾸지 않는다(0개
+// export이던 기존 상태와 번들 결과가 동일). teacher-app.ts 자체를
+// import하면 모듈 최상단에서 즉시 document.getElementById를 호출해(el()
+// 헬퍼) DOM이 없는 환경(Vitest 기본 node 환경)에서는 import 자체가
+// 실패한다 — 그래서 실제 테스트는 이 export를 직접 쓰지 않고 source
+// text 검사로 대체했다(tests/ui/teacher-regression.test.ts 주석 참고).
+// 이 export는 향후 DOM 환경이 도입될 때를 대비한 최소 준비일 뿐이다.
+export const EVENT_LABELS: Record<string, string> = {
   'mission-open': '미션 열기',
   'activity-open': '활동 열기',
   paste: '코드 붙여넣기',
@@ -333,7 +342,7 @@ const EVENT_LABELS: Record<string, string> = {
 // 자기보고 성격이 드러나야 교사가 검증된 사실로 오인하지 않는다. re-observe는
 // "다시 관찰하기로 선택했다"는 행동 사실만 나타내 이미 정확하므로 그대로
 // 둔다.
-const COACH_REFLECTION_CHOICE_LABELS: Record<string, string> = {
+export const COACH_REFLECTION_CHOICE_LABELS: Record<string, string> = {
   're-observe': '다시 관찰',
   resolved: '해결됐다고 응답',
 };
@@ -344,7 +353,7 @@ const COACH_REFLECTION_CHOICE_LABELS: Record<string, string> = {
 // 수 없는 의미이기 때문). error는 payload.type(예외 클래스명)이 있으면
 // 덧붙여 어떤 오류였는지 바로 알 수 있게 한다. coach-hint/coach-reflection도
 // 같은 패턴으로 payload의 level/choice를 라벨 뒤에 덧붙인다.
-function describeEvent(ev: TimelineEvent): string {
+export function describeEvent(ev: TimelineEvent): string {
   const label = EVENT_LABELS[ev.eventType] ?? ev.eventType;
   const payload = (ev.payload && typeof ev.payload === 'object' ? ev.payload : {}) as Record<string, unknown>;
   if (ev.eventType === 'checkpoint') {
