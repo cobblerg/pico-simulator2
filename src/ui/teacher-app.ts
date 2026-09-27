@@ -266,7 +266,7 @@ type AIAnalysisResultUI = {
 };
 type AIAnalysisResponse = { status: 'ok'; analysis: AIAnalysisResultUI | null } | { status: 'not_approved' };
 
-// 실제로 존재하는 24개 event_type만 다룬다(learning-event-handler.ts의
+// 실제로 존재하는 25개 event_type만 다룬다(learning-event-handler.ts의
 // ALLOWED_EVENT_TYPES와 정확히 같은 집합) — 새 event type을 여기서 만들어
 // 내지 않는다. 매핑에 없는 값이 방어적으로 와도 raw event_type을 그대로
 // 보여준다(폴백일 뿐, 정상 경로에서는 발생하지 않는다).
@@ -295,6 +295,7 @@ const EVENT_LABELS: Record<string, string> = {
   'coach-hint': 'AI 코치 힌트 요청',
   'coach-retry': 'AI 코치 재시도',
   'coach-reflection': 'AI 코치 학습 성찰',
+  'feedback-retry': '교사 피드백 후 다시 시도 선택',
 };
 
 const COACH_REFLECTION_CHOICE_LABELS: Record<string, string> = {

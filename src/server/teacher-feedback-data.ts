@@ -105,3 +105,19 @@ export async function updateOwnFeedback(
 
   return toDTO(data[0] as FeedbackRow);
 }
+
+// D11-B11: feedback-retry learning event의 ownership 검증에만 쓰인다 —
+// feedbackId가 실제로 존재하는지, 존재한다면 어느 enrollment의 것인지만
+// 확인하는 최소한의 data helper다. authorization 판단(그 enrollment가
+// 지금 요청 중인 학생과 같은지)은 이 함수의 책임이 아니다 — 호출부
+// (learning-event-handler.ts)가 반환값을 session.enrollmentId와 비교한다
+// (teacher-feedback-handler.ts/teacher-timeline-data.ts와 동일한 책임
+// 분리 원칙). content/teacher_id 등 불필요한 컬럼은 조회하지 않는다.
+export async function getFeedbackEnrollmentId(client: SupabaseClient, feedbackId: string): Promise<string | null> {
+  const { data, error } = await client.from('teacher_feedback').select('enrollment_id').eq('feedback_id', feedbackId).limit(1);
+
+  if (error) throw error;
+  if (data.length !== 1) return null;
+
+  return (data[0] as { enrollment_id: string }).enrollment_id;
+}

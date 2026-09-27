@@ -41,7 +41,7 @@ function pick(payload: unknown, keys: string[]): Record<string, unknown> {
   return out;
 }
 
-// learning-event-handler.ts의 ALLOWED_EVENT_TYPES(24종)와 정확히 같은
+// learning-event-handler.ts의 ALLOWED_EVENT_TYPES(25종)와 정확히 같은
 // event_type 집합을 다룬다 — 그 외 값은 이 DB에 애초에 저장될 수 없다(그
 // handler가 쓰기 시점에 이미 거부하므로). 매핑에 없는 값이 방어적으로
 // 들어와도 빈 객체로 처리한다(아래 조회 함수의 fallback).
@@ -76,6 +76,12 @@ const TIMELINE_SANITIZERS: Record<string, (payload: unknown) => Record<string, u
   'coach-hint': (p) => pick(p, ['level', 'focus']),
   'coach-retry': () => ({}),
   'coach-reflection': (p) => pick(p, ['choice']),
+  // D11-B11: feedbackId는 내부 DB id이므로 Timeline에는 절대 노출하지
+  // 않는다(coach-open/coach-retry와 동일한 패턴) — 교사는 자신이 쓴
+  // feedback을 이미 알고 있으므로, "선택했다"는 사실만으로 충분하다. 이
+  // 빈 payload는 AI 입력(ai-learning-analysis.ts)에도 그대로 전달되어,
+  // feedbackId가 AI에 노출되는 경로 자체를 원천 차단한다.
+  'feedback-retry': () => ({}),
 };
 
 type LearningEventRow = {

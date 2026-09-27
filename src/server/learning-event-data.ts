@@ -15,6 +15,7 @@
 //   2. insertLearningEvent: 재확인을 통과한 identity로만 INSERT한다.
 import { SupabaseClient } from '@supabase/supabase-js';
 import { StudentSessionIdentity } from './student-session';
+import { getFeedbackEnrollmentId } from './teacher-feedback-data';
 
 type EnrollmentConsistencyRow = {
   enrollment_id: string;
@@ -35,9 +36,14 @@ export type LearningEventInsert = {
 // 이 인터페이스는 browser에서 재사용될 일이 없으므로(0-D9 API 설계 원칙:
 // browser는 identity를 절대 직접 다루지 않는다) 계약과 구현을 별도 파일로
 // 나누지 않고 이 한 파일에 함께 둔다.
+// D11-B11: feedback-retry의 ownership 검증(feedbackId → enrollment_id)도
+// 이 데이터소스를 통해서만 이루어진다 — handler는 여전히 dataSource
+// 하나만 주입받는다(0-D9-B의 단일 seam 원칙 유지, api/events.ts 어댑터
+// 변경 불필요).
 export type LearningEventDataSource = {
   verifyEnrollmentConsistency(session: StudentSessionIdentity): Promise<StudentSessionIdentity | null>;
   insertLearningEvent(event: LearningEventInsert): Promise<void>;
+  getFeedbackEnrollmentId(feedbackId: string): Promise<string | null>;
 };
 
 export function createSupabaseLearningEventDataSource(client: SupabaseClient): LearningEventDataSource {
@@ -71,6 +77,10 @@ export function createSupabaseLearningEventDataSource(client: SupabaseClient): L
         payload: event.payload,
       });
       if (error) throw error;
+    },
+
+    async getFeedbackEnrollmentId(feedbackId) {
+      return getFeedbackEnrollmentId(client, feedbackId);
     },
   };
 }

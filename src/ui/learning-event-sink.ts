@@ -26,7 +26,7 @@
 import { isLearningEventSinkEnabled } from './learning-event-lifecycle';
 
 // 0-D9-B src/server/learning-event-handler.ts의 ALLOWED_EVENT_TYPES와
-// 정확히 같은 24종이어야 한다 — 서버가 어차피 이 목록 밖은 400으로
+// 정확히 같은 25종이어야 한다 — 서버가 어차피 이 목록 밖은 400으로
 // 거부하지만, 여기서 먼저 걸러야 불필요한 네트워크 요청 자체가 없다.
 // teacher-*(교사 조작), repl(자유 입력 PII), open/tab/copy-code/
 // download-main/project-export(낮은 교육적 가치)는 제외한다.
@@ -56,6 +56,9 @@ const ALLOWED_EVENT_TYPES = new Set([
   'coach-hint',
   'coach-retry',
   'coach-reflection',
+  // D11-B11: 교사 feedback에서 "확인하고 다시 해보기"를 선택했다는 사실만
+  // 기록한다.
+  'feedback-retry',
 ]);
 
 // 큐가 가득 찼을 때 우선적으로 보존할 이벤트 — 학습 성과 판정(checkpoint)과

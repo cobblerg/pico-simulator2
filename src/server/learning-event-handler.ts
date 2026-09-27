@@ -59,11 +59,20 @@ const ALLOWED_EVENT_TYPES = new Set([
   'coach-hint',
   'coach-retry',
   'coach-reflection',
+  // D11-B11: 학생이 교사 feedback에서 "확인하고 다시 해보기"를 선택했다는
+  // 사실만 기록한다 — 실제 Run/성공/이해의 증거가 아니다(그 증거는 기존
+  // run/checkpoint가 담당한다).
+  'feedback-retry',
 ]);
 
 // ---------- 제한값 ----------
 const MAX_ACTIVITY_ID_LENGTH = 32;
 const ACTIVITY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/; // m1~m6를 포함하되 미래 확장을 과하게 막지 않는 최소 형식
+// teacher_feedback.feedback_id는 gen_random_uuid() 기본값을 쓰는 표준 UUID다
+// (D11-B11) — 형식만 이 정규식으로 먼저 걸러내고, 실제 소유권(그 feedback이
+// 이 학생 것인지)은 이후 dataSource.getFeedbackEnrollmentId()로 DB에서
+// 재확인한다.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_PAYLOAD_JSON_BYTES = 32 * 1024; // 32KB — 0-D9 architecture review에서 정한 상한
 // run/real-run의 code 필드 상한. project.ts의 parseFile()이 공유 프로젝트
 // 파일 import 시 쓰는 50000자 상한과는 다른 값이다 — 그건 "가끔 한 번
@@ -244,6 +253,15 @@ const SANITIZERS: Record<string, (p: Record<string, unknown>) => SanitizeResult>
     withDefined(out, 'choice', pickEnum(p, 'choice', ['re-observe', 'resolved'] as const));
     return { ok: true, payload: out };
   },
+  // D11-B11: feedbackId 형식(문자열 + UUID 모양)만 여기서 검증한다 — 그
+  // feedbackId가 실제로 이 학생의 것인지(소유권)는 이 순수 함수가 판단할
+  // 수 없으므로, handleLearningEventRequest()가 이 sanitizer를 통과한
+  // 뒤 별도로 dataSource.getFeedbackEnrollmentId()를 호출해 재확인한다.
+  'feedback-retry': (p) => {
+    const feedbackId = pickString(p, 'feedbackId');
+    if (feedbackId === undefined || !UUID_PATTERN.test(feedbackId)) return { ok: false };
+    return { ok: true, payload: { feedbackId } };
+  },
 };
 
 function isValidActivityId(v: unknown): v is string {
@@ -319,6 +337,27 @@ export async function handleLearningEventRequest(
   const payloadJsonBytes = Buffer.byteLength(JSON.stringify(sanitized.payload), 'utf8');
   if (payloadJsonBytes > MAX_PAYLOAD_JSON_BYTES) {
     return { httpStatus: 400, body: { error: 'invalid request' } };
+  }
+
+  // 7.5. feedback-retry 전용 ownership 검증(D11-B11) — sanitizer는 형식만
+  // 확인했을 뿐, payload.feedbackId가 실제로 이 학생(session.enrollmentId로
+  // 재확인된 confirmed.enrollmentId)의 feedback인지는 DB로 다시 물어봐야
+  // 한다. 존재하지 않는 feedbackId와 "다른 학생의 feedbackId"를 구분해서
+  // 알려주지 않는다 — 둘 다 동일한 400으로 응답한다(0-D7-B의 "실패 사유를
+  // 하나로 접는다" 원칙, feedbackId 존재 여부 자체가 정보 노출이 될 수
+  // 있으므로). 이것이 D11-B11의 핵심 보안 요구사항이다: 학생 A가 학생 B의
+  // feedbackId를 제출해 event를 만드는 경로를 막는다.
+  if (eventType === 'feedback-retry') {
+    const feedbackId = sanitized.payload.feedbackId as string;
+    let feedbackEnrollmentId: string | null;
+    try {
+      feedbackEnrollmentId = await dataSource.getFeedbackEnrollmentId(feedbackId);
+    } catch {
+      return { httpStatus: 500, body: { error: 'internal error' } };
+    }
+    if (feedbackEnrollmentId !== confirmed.enrollmentId) {
+      return { httpStatus: 400, body: { error: 'invalid request' } };
+    }
   }
 
   // 8. learning_event INSERT — identity는 반드시 6번에서 재확인된 값만 쓴다.
