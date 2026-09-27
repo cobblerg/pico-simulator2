@@ -1325,3 +1325,167 @@ DB/schema migration: NONE
 - feedback 이후 실제 Run은 기존 learning_event로 관찰 가능
 - 특정 feedback과 이후 Run 사이의 causal/correlation linkage는 아직 없음
 - post-feedback learning change visibility는 후속 후보
+
+## 2026-09-27 — D11-B12 — Post-Feedback Learning Change Visibility
+
+### Status
+CLOSED
+
+### 구현 목적
+Teacher Feedback Loop에서 "teacher feedback → student feedback view → '확인하고 다시 해보기' → feedback-retry" 이후, 교사가 학생의 실제 후속 학습 행동을 쉽게 확인할 수 있도록 Teacher 화면에 "피드백 이후 관찰" deterministic card를 추가했다.
+
+**중요**: 이 기능은 feedback effectiveness를 평가하는 기능이 아니다.
+
+### Observation Semantics
+anchor: 가장 최근 `eventType === 'feedback-retry'`.
+
+observation window: 그 anchor 이후의 `learning_event`만 사용한다.
+
+구현 방식: chronological events 배열에서 가장 최근 feedback-retry index를 찾고 `events.slice(anchorIndex + 1)`로 이후 event를 계산한다. 특정 feedbackId는 사용하지 않는다.
+
+### Deterministic Fields
+`hasRetry` / `retryAt` / `totalEvents` / `runCount` / `checkpointCount` / `coachCount` / `latestActivityId` / `latestCheckpointMsg`. 모든 값은 기존 sanitized `learning_event` 배열에서 deterministic하게 계산된다. AI 판정 없음.
+
+### Interpretation Boundary
+이 기능이 표현하는 것: "가장 최근 다시 해보기 선택 이후 시간순으로 관찰된 학습 행동".
+
+표현하지 않는 것: 특정 feedback 때문에 Run했다, feedback으로 학습이 향상됐다, 학생이 이해했다, 학생이 성공했다, feedback 효과가 있었다.
+
+`temporal sequence ≠ causation`
+
+UI 고정 안내: "시간순으로 관찰된 사실만 보여주며, 특정 피드백과의 인과관계를 의미하지 않습니다."
+
+### Run / Checkpoint / Coach Semantics
+- **Run**: `runCount`는 실행 버튼 클릭이 관찰된 횟수. 성공/정답 의미 아님.
+- **Checkpoint**: `checkpointCount`는 checkpoint event가 관찰된 횟수. `latestCheckpointMsg`는 기존 sanitized message를 그대로 표시. 향상/개선 판정 없음.
+- **Coach**: `coachCount`는 feedback-retry 이후 `coach-*` event가 관찰된 횟수. 학생 능력/이해 부족을 의미하지 않음.
+
+### Cross-Activity Semantics
+post-feedback observation은 activityId로 필터링하지 않는다. 예: `[m1] feedback-retry → [m2] run → [m3] checkpoint`이면 모두 observation에 포함된다. `latestActivityId`는 가장 최근 관찰 event의 activity context다. `feedback-retry.activityId`는 feedback 대상 mission을 의미하지 않는다.
+
+### Server Implementation
+`src/server/teacher-timeline-data.ts`: `PostFeedbackObservation` type, `buildPostFeedbackObservation(events)` pure deterministic calculation, new DB query 없음.
+
+`src/server/teacher-timeline-handler.ts`: 기존 `listRecentLearningEventsForEnrollment()` 결과 재사용, 기존 events response 유지, `postFeedbackObservation` 필드 추가, authorization chain 변경 없음.
+
+### Teacher UI
+`src/teacher.html`: "피드백 이후 관찰" card 추가.
+
+`src/ui/teacher-app.ts`: observation 렌더링, empty/result state, student/class lifecycle reset, 학생 전환 시 이전 학생 observation 잔존 방지. 새 CSS 없음.
+
+### Empty State
+feedback-retry가 없으면 "아직 다시 해보기를 선택한 기록이 없습니다."를 표시한다. 이는 error가 아니라 feedback-retry event가 없다는 사실만 의미한다.
+
+### Privacy / Security
+`postFeedbackObservation`에 노출하지 않음: `feedbackId` / `teacherId` / `enrollmentId` / `studentId` / `classId` / `eventId`. feedbackId 자체를 계산에 사용하지 않는다.
+
+기존 Teacher Timeline security(teacher token → teacher identity → class ownership → student enrollment) 그대로 유지. 새 identity input 없음.
+
+### DB / API / AI Scope
+DB migration: NONE
+
+new API route: NONE
+
+new DB query: NONE
+
+AI changes: NONE
+
+student-side changes: NONE
+
+teacher_feedback.event_id reinterpretation: NONE
+
+### Feature Commit
+- full hash: b8a10924d4378b21ba4130c7e76e6efc53542804
+- short: b8a1092
+- message: feat: show post-feedback learning observations
+
+files:
+- src/server/teacher-timeline-data.ts
+- src/server/teacher-timeline-handler.ts
+- src/teacher.html
+- src/ui/teacher-app.ts
+
+diff: 4 files changed, 169 insertions, 3 deletions
+
+### Local Validation
+- Case 1: feedback-retry 없음 → hasRetry false — PASS
+- Case 2: checkpoint, feedback-retry, run, run, checkpoint → totalEvents 3, runCount 2, checkpointCount 1 — PASS
+- Case 3: feedback-retry, run, feedback-retry, checkpoint, coach-open → 가장 최근 retry만 anchor, totalEvents 2, runCount 0, checkpointCount 1, coachCount 1 — PASS
+- Case 4: [m1] feedback-retry, [m2] run, [m3] checkpoint → cross-activity 포함, latestActivityId m3 — PASS
+- Case 5: feedback-retry가 마지막 event → hasRetry true, totalEvents 0, counts 0 — PASS
+- Case 6: anchor 이전 run 10개 → post-feedback count에서 제외 — PASS
+
+scratch validation: 19/19 PASS
+
+build: PASS
+
+Teacher events API bundle: PASS
+
+### Production E2E
+Production anchor: 최근 다시 해보기 선택 2026-09-27 오전 11:09.
+
+첫 확인:
+- 이후 학습 이벤트: 3회
+- 실행: 1회
+- 체크포인트: 1회
+- 최근 체크포인트: "내장 LED가 1.0초 동안 켜졌어요."
+- AI 코치 사용: 0회
+- 최근 활동: m1
+
+그 후 학생이 추가 학습 행동을 수행.
+
+두 번째 확인:
+- anchor: 오전 11:09 그대로 유지
+- 이후 학습 이벤트: 7회
+- 실행: 2회
+- 체크포인트: 2회
+- 최근 체크포인트: "내장 LED가 1.0초 동안 켜졌어요."
+- AI 코치 사용: 1회
+- 최근 활동: m1
+
+판정:
+- anchor stability: PASS
+- new Run reflected: PASS
+- new checkpoint reflected: PASS
+- coach event reflected: PASS
+- deterministic recount: PASS
+- interpretation boundary visible: PASS
+
+Production E2E: PASS
+
+### Explicitly Out of Scope
+- feedback effectiveness score
+- improvement score
+- before/after numerical score
+- automatic improvement judgment
+- causal attribution
+- specific feedback association
+- feedbackId UI exposure
+- feedbackId AI exposure
+- attempt/correlation architecture
+- mission auto-linking
+- teacher_feedback.event_id reinterpretation
+- student ranking
+- ability classification
+- notification
+- analytics dashboard redesign
+
+### Remaining Boundary
+현재 B12는 가장 최근 feedback-retry 이후의 시간순 학습 행동을 보여준다.
+
+그러나 특정 feedback과 특정 이후 Run/checkpoint 사이의 causal/correlation linkage는 여전히 없다. 이는 의도적으로 추측하지 않는 설계다.
+
+향후 정말 필요할 경우에만 별도의 attempt/correlation architecture를 독립 설계해야 한다. 현재 B12의 결함으로 처리하지 않는다.
+
+### Closure
+D11-B12: CLOSED
+
+feature commit: b8a1092
+
+Production E2E: PASS
+
+deterministic observation: PASS
+
+privacy/security: PASS
+
+DB/schema changes: NONE
