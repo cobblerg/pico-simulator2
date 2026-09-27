@@ -62,6 +62,7 @@ import { store, startWorkspace, saveWorkspace, Workspace } from './project';
 import { MISSIONS } from './data';
 import { disableWorkspaceAutosave, enableWorkspaceAutosave } from './workspace-autosave';
 import { enableLearningEventSink, disableLearningEventSink } from './learning-event-lifecycle';
+import { activateLearningEventQueue } from './learning-event-sink';
 import { loadStudentFeedback } from './student-feedback';
 
 const SESSION_KEY = 'picosim:student-context';
@@ -281,8 +282,14 @@ export function initStudentEntryGate(): void {
     }
   }
 
-  if (loadStudentContext()) {
+  const existingContext = loadStudentContext();
+  if (existingContext) {
     showExitButton(true);
+    // D12-1C1: enrollmentId는 durable queue partition을 고르는 로컬 게이트일
+    // 뿐이다(서버 identity/authorization과 무관) — enableLearningEventSink()
+    // 보다 먼저 호출해 신규 이벤트가 큐에 들어가기 전에 partition이 이미
+    // 정해져 있게 한다.
+    activateLearningEventQueue(existingContext.enrollmentId);
     enableLearningEventSink(); // F5 등으로 이미 유효한 세션을 이어받는 경우
     void loadStudentFeedback(); // D11-B10: 같은 시점에 선생님 피드백도 불러온다
   } else {
@@ -356,6 +363,7 @@ export function initStudentEntryGate(): void {
         allowClose = true; // 유일하게 승인된 close 경로
         dialog!.close();
         showExitButton(true);
+        activateLearningEventQueue(ctx.enrollmentId); // D12-1C1: 이 학생 enrollment의 durable queue partition을 활성화
         enableLearningEventSink(); // 이제부터 이 학생의 picosim:event를 저장한다
         void loadStudentFeedback(); // D11-B10: 같은 시점에 선생님 피드백도 불러온다
         return;
@@ -417,6 +425,12 @@ export function initStudentEntryGate(): void {
 
       if (!logoutOk) {
         enableWorkspaceAutosave(); // 이 페이지가 계속 쓰일 수 있으므로 자동저장을 되돌린다
+        // D12-1C1: clearStudentContext()는 아직 호출되지 않았으므로(로그아웃
+        // 실패 시 이 분기에서 return하기 때문) sessionStorage에 이전
+        // enrollmentId가 그대로 남아있다 — 다시 읽어 같은 partition을
+        // 재활성화한다(다른 학생으로 바뀐 것이 아니므로 안전).
+        const stillContext = loadStudentContext();
+        if (stillContext) activateLearningEventQueue(stillContext.enrollmentId);
         enableLearningEventSink(); // 같은 학생이 계속 쓰므로 이벤트 저장도 되돌린다
         exitBtn.disabled = false;
         exitBtn.textContent = '나가기 실패 · 다시 시도';
