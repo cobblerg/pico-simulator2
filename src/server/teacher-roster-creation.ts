@@ -18,42 +18,60 @@
 // schema/타입과 여전히 정합함을 D11-C0 §B에서 확인했다 — 새 validation을
 // 만들지 않고 그대로 재사용한다.
 import { SupabaseClient } from '@supabase/supabase-js';
+import { randomUUID } from 'crypto';
 import { RosterEntryInput, RosterEntryValidation, normalizeRosterEntry, validateRosterEntry } from '../ui/student-domain';
 import { UNIQUE_VIOLATION_CODE } from './teacher-class-creation';
 
 // ---------- data access ----------
+//
+// D11-C6 §4/§5 mandatory review: 이전 구현은 multi-row INSERT ... RETURNING이
+// 입력 순서와 같은 순서로 행을 반환한다고 가정하고, 그 배열 index로
+// studentInsert.rows[i] ↔ validated[i]를 대응시켰다. Postgres가 실무적으로
+// 이 순서를 지키는 경우가 대부분이지만, SQL 표준이나 Supabase client API
+// 계약 어느 쪽도 이를 공식적으로 보장하지 않는다 — 순서가 어긋나면 학번
+// A의 enrollment가 실제로는 학번 B의 student_id를 가리키는 identity
+// mis-link가 조용히 발생할 수 있었다(교사가 눈치채기 전까지는 절대 드러나지
+// 않는 종류의 결함).
+//
+// 수정: student_id/enrollment_id를 DB의 gen_random_uuid() 기본값에 맡기지
+// 않고, 애플리케이션이 insert 직전에 crypto.randomUUID()로 직접 생성해
+// INSERT 문에 명시적으로 넣는다. uuid 컬럼은 임의의 값을 받아들이므로
+// 스키마 변경이 필요 없다. 이렇게 하면 어떤 studentNo/name이 어떤
+// studentId/enrollmentId를 갖는지 애플리케이션이 처음부터 알고 있으므로,
+// RETURNING 결과의 순서에 전혀 의존할 필요가 없어진다(응답 상관관계 자체가
+// 구조적으로 사라짐 — "보장되지 않는 순서에 의존한다면 제거하는 것을
+// 우선한다"는 §4/§5 원칙을 가장 작은 변경으로 만족).
+//
+// name/studentNo는 여전히 correlation key로 쓰지 않는다(동명이인 허용,
+// studentNo도 class 밖에서는 global하지 않음 — §5 원칙 그대로 유지).
+//
+// 부수 효과: 이제 insert 성공 여부는 오직 error 유무로만 판단한다 — 단일
+// multi-row INSERT 문은 Postgres에서 그 자체로 원자적이므로(공식 보장,
+// RETURNING 순서와 달리 이것은 실제 계약이다), error가 없으면 N행 전부가
+// 삽입됐다는 뜻이고, 반환된 행 수를 다시 세어 방어적으로 확인할 필요도
+// 없어졌다(이전의 rows.length 방어 코드도 함께 제거한다).
 
-type StudentRow = { student_id: string; name: string };
-type EnrollmentRow = { enrollment_id: string; student_id: string; student_no: string };
+export type InsertResult = { status: 'ok' } | { status: 'error'; error: unknown };
 
-export type InsertStudentsResult = { status: 'ok'; rows: StudentRow[] } | { status: 'error'; error: unknown };
-
-export async function insertStudentsBatch(client: SupabaseClient, students: { name: string }[]): Promise<InsertStudentsResult> {
-  const { data, error } = await client
-    .from('student')
-    .insert(students.map((s) => ({ name: s.name })))
-    .select('student_id, name');
+export async function insertStudentsBatch(client: SupabaseClient, students: { studentId: string; name: string }[]): Promise<InsertResult> {
+  const { error } = await client.from('student').insert(students.map((s) => ({ student_id: s.studentId, name: s.name })));
 
   if (error) return { status: 'error', error };
-  return { status: 'ok', rows: data as StudentRow[] };
+  return { status: 'ok' };
 }
 
-export type InsertEnrollmentsResult =
-  | { status: 'ok'; rows: EnrollmentRow[] }
-  | { status: 'collision' }
-  | { status: 'error'; error: unknown };
+export type InsertEnrollmentsResult = { status: 'ok' } | { status: 'collision' } | { status: 'error'; error: unknown };
 
 // enrollment의 UNIQUE(class_id, student_no) 위반만 'collision'으로 인식한다
 // (§4/§13 요구사항과 동일한 원칙 — 다른 DB 에러를 충돌로 취급하지 않는다).
 export async function insertEnrollmentsBatch(
   client: SupabaseClient,
   classId: string,
-  entries: { studentId: string; studentNo: string }[]
+  entries: { studentId: string; enrollmentId: string; studentNo: string }[]
 ): Promise<InsertEnrollmentsResult> {
-  const { data, error } = await client
+  const { error } = await client
     .from('enrollment')
-    .insert(entries.map((e) => ({ student_id: e.studentId, class_id: classId, student_no: e.studentNo })))
-    .select('enrollment_id, student_id, student_no');
+    .insert(entries.map((e) => ({ enrollment_id: e.enrollmentId, student_id: e.studentId, class_id: classId, student_no: e.studentNo })));
 
   if (error) {
     if ((error as { code?: unknown }).code === UNIQUE_VIOLATION_CODE) {
@@ -62,7 +80,7 @@ export async function insertEnrollmentsBatch(
     return { status: 'error', error };
   }
 
-  return { status: 'ok', rows: data as EnrollmentRow[] };
+  return { status: 'ok' };
 }
 
 export type DeleteStudentsResult = { status: 'ok' } | { status: 'error'; error: unknown };
@@ -119,7 +137,7 @@ export type RegisterRosterResult =
   | { status: 'duplicate-conflict' }
   | { status: 'enrollment-failed' };
 
-// 흐름(D11-C0 §E/§K, D11-C3 §7~§13 그대로):
+// 흐름(D11-C0 §E/§K, D11-C3 §7~§13, D11-C6 §4/§5 RETURNING-order 제거 그대로):
 //   1. entries가 비어 있으면 즉시 empty-entries.
 //   2. normalizeRosterEntry()로 각 항목 정규화.
 //   3. 이 학급에 이미 존재하는 studentNo를 한 번에 조회(findExistingStudentNos).
@@ -127,20 +145,16 @@ export type RegisterRosterResult =
 //      studentNo도 "taken"으로 취급해 batch 내부 중복을 잡는다.
 //   5. 하나라도 invalid면 전체를 write하지 않고 validation-failed 반환
 //      (all-or-nothing, D11-C0/§11 확정 계약).
-//   6. student batch insert(§12 원칙: 단일 multi-row INSERT는 그 자체로
-//      원자적) → 실패 시 insert-failed.
-//   7. enrollment batch insert → 성공하면 ok. UNIQUE(class_id, student_no)
-//      race condition(§13, 사전 조회 이후에도 동시 요청이 끼어든 경우)이면
-//      collision으로 인식하고, 그 외 에러와 마찬가지로 student batch를
-//      보상 삭제한 뒤 controlled 결과만 반환한다.
-//
-// 참고(알려진 가정): student/enrollment 각각의 multi-row INSERT ...
-// RETURNING 결과 배열이 입력 순서와 같은 순서로 반환된다고 가정하고
-// 위치(index)로 매칭한다 — 이 테이블들에는 트리거/룰이 없으므로(migration
-// 확인) 실제 Postgres 구현에서 이 가정이 깨질 이유가 없지만, SQL 표준이
-// 이 순서를 공식적으로 보장하지는 않는다. 반환된 행 수가 입력 수와 다르면
-// (그 자체로 상관관계가 깨졌다는 신호이므로) insert-failed로 처리해 최소한의
-// 방어를 둔다.
+//   6. 통과한 각 항목에 studentId/enrollmentId를 미리 생성한다(randomUUID) —
+//      이 값들이 곧 최종 응답이 되므로, 이후 어떤 DB 응답의 행 순서에도
+//      의존하지 않는다.
+//   7. student batch insert(§12 원칙: 단일 multi-row INSERT는 그 자체로
+//      원자적, error 없으면 N행 전부 성공) → 실패 시 insert-failed.
+//   8. enrollment batch insert → 성공하면 ok(미리 만든 값 그대로 응답).
+//      UNIQUE(class_id, student_no) race condition(§13, 사전 조회 이후에도
+//      동시 요청이 끼어든 경우)이면 collision으로 인식하고, 그 외 에러와
+//      마찬가지로 student batch를 보상 삭제한 뒤 controlled 결과만
+//      반환한다.
 export async function registerRosterEntries(
   client: SupabaseClient,
   classId: string,
@@ -184,39 +198,44 @@ export async function registerRosterEntries(
     return { status: 'validation-failed', errors };
   }
 
+  // studentId/enrollmentId를 여기서 확정한다 — 이후 두 insert의 응답 행
+  // 순서와 완전히 무관하게, 이 배열(prepared)만이 최종 identity의 유일한
+  // source of truth다.
+  const prepared: RegisterRosterCreatedEntry[] = validated.map((e) => ({
+    studentId: randomUUID(),
+    enrollmentId: randomUUID(),
+    studentNo: e.studentNo,
+    name: e.name,
+  }));
+
   const studentInsert = await insertStudentsBatch(
     client,
-    validated.map((e) => ({ name: e.name }))
+    prepared.map((p) => ({ studentId: p.studentId, name: p.name }))
   );
-  if (studentInsert.status !== 'ok' || studentInsert.rows.length !== validated.length) {
+  if (studentInsert.status !== 'ok') {
     return { status: 'insert-failed' };
   }
 
   const enrollmentInsert = await insertEnrollmentsBatch(
     client,
     classId,
-    validated.map((e, i) => ({ studentId: studentInsert.rows[i].student_id, studentNo: e.studentNo }))
+    prepared.map((p) => ({ studentId: p.studentId, enrollmentId: p.enrollmentId, studentNo: p.studentNo }))
   );
 
-  if (enrollmentInsert.status === 'ok' && enrollmentInsert.rows.length === validated.length) {
-    const entries: RegisterRosterCreatedEntry[] = enrollmentInsert.rows.map((row, i) => ({
-      studentId: row.student_id,
-      enrollmentId: row.enrollment_id,
-      studentNo: row.student_no,
-      name: validated[i].name,
-    }));
-    return { status: 'ok', entries };
+  if (enrollmentInsert.status === 'ok') {
+    return { status: 'ok', entries: prepared };
   }
 
-  // 여기 도달했다는 것은 enrollment batch가 실패했거나(collision/error) 또는
-  // 방어적 개수 불일치가 발생했다는 뜻이다 — 두 경우 모두 방금 만든 student
-  // batch를 orphan으로 남기지 않도록 보상 삭제한다.
+  // 여기 도달했다는 것은 enrollment batch가 실패했다는(collision/error) 뜻이다
+  // — 방금 만든 student batch를 orphan으로 남기지 않도록 보상 삭제한다.
+  // 삭제 대상은 이번 요청에서 우리가 직접 생성한 studentId(prepared)로만
+  // 한정되므로 다른 요청/기존 row를 건드릴 방법이 없다.
   const compensation = await deleteStudentsBatch(
     client,
-    studentInsert.rows.map((r) => r.student_id)
+    prepared.map((p) => p.studentId)
   );
   if (compensation.status !== 'ok') {
-    logRosterCreationCompensationFailure({ studentIds: studentInsert.rows.map((r) => r.student_id) });
+    logRosterCreationCompensationFailure({ studentIds: prepared.map((p) => p.studentId) });
   }
 
   if (enrollmentInsert.status === 'collision') {

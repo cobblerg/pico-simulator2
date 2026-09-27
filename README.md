@@ -82,6 +82,26 @@ npm run build          # node build.mjs → dist/index.html (설치용), dist/pi
 npm start               # server.mjs로 dist/를 http://localhost:3000 에서 확인
 ```
 
+**환경변수**
+
+`npm run build`는 `dist/index.html`/`dist/picosim-artifact.html`(학생 시뮬레이터)까지는 환경변수 없이 생성하지만, 이어지는 `dist/teacher.html`(교사 대시보드) 빌드 단계에서 아래 두 값이 없으면 명확한 오류로 중단합니다(값을 조용히 생략하지 않는 fail-closed 설계):
+
+| 변수 | 용도 | 필요 시점 |
+|---|---|---|
+| `PUBLIC_SUPABASE_URL` | 교사 브라우저가 Supabase Auth(Google 로그인)에 접속할 프로젝트 URL | `npm run build` (dist/teacher.html) |
+| `PUBLIC_SUPABASE_ANON_KEY` | 위와 함께 쓰는 공개 anon key(RLS로 보호됨) | `npm run build` (dist/teacher.html) |
+
+Vercel에 배포된 서버(API routes)가 실제로 동작하려면 아래 값도 별도로 필요합니다(빌드 자체에는 필요 없고, 런타임에만 필요):
+
+| 변수 | 용도 |
+|---|---|
+| `SUPABASE_URL` | 서버 전용 Supabase 프로젝트 URL |
+| `SUPABASE_SECRET_KEY` | RLS를 우회하는 서버 전용 service-role key — 절대 브라우저에 노출하지 않음 |
+| `STUDENT_SESSION_SECRET` | 학생 세션 쿠키(HttpOnly) 서명용 HMAC 비밀키 — `SUPABASE_SECRET_KEY`와 별개로 관리 |
+| `OPENAI_API_KEY` | 교사용 AI 학습과정 분석(gpt-5-mini) 호출에 사용 |
+
+로컬에서 `dist/teacher.html`까지 빌드하려면 위 `PUBLIC_*` 두 값을 셸 환경변수로 직접 설정한 뒤 `npm run build`를 실행하세요(예: `PUBLIC_SUPABASE_URL=... PUBLIC_SUPABASE_ANON_KEY=... npm run build`). 실제 값은 이 저장소에 커밋하지 않습니다.
+
 **배포 (Production)**
 
 1. 소스를 `main`에 commit/push

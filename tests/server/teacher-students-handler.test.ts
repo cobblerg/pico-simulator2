@@ -1,4 +1,10 @@
 // D11-C3 — Roster Management Server Boundary: POST /api/teacher/classes/:classId/students
+// (D11-C6 §4/§5: student/enrollment insert 응답에서 더 이상 .select()로
+// 반환 행을 읽지 않는다 — studentId/enrollmentId는 애플리케이션이
+// crypto.randomUUID()로 미리 생성하므로, fake client의 insert()는 그냥
+// {data:null, error:null}만 돌려주면 된다. 이 파일의 "성공 wiring" 테스트도
+// 고정 문자열(stu-0 등) 대신 실제 UUID 형식 + insert payload와의 일치를
+// 확인하도록 갱신했다.)
 //
 // handleTeacherStudentsRequest()는 SupabaseClient를 직접 받는 순수 함수다.
 // resolveTeacherFromAccessToken()(auth.getUser + teacher 테이블)과
@@ -16,13 +22,12 @@ const TEACHER_ROW = { teacher_id: 'teacher-1', display_name: '김선생' };
 const OWNED_CLASS_ID = 'class-owned';
 const OTHER_CLASS_ID = 'class-not-owned';
 
-function makeFakeClient(config: {
-  approved: boolean;
-  ownsClass: boolean;
-  studentInsertRows?: { student_id: string; name: string }[];
-  enrollmentInsertRows?: { enrollment_id: string; student_id: string; student_no: string }[];
-}) {
+function makeFakeClient(config: { approved: boolean; ownsClass: boolean }) {
   const insertCalls = { student: 0, enrollment: 0 };
+  const insertPayloads = {
+    student: [] as { student_id: string; name: string }[][],
+    enrollment: [] as { enrollment_id: string; student_id: string; class_id: string; student_no: string }[][],
+  };
 
   const client = {
     auth: {
@@ -67,21 +72,19 @@ function makeFakeClient(config: {
               },
             };
           },
-          insert(rows: Record<string, unknown>[]) {
+          insert(rows: { enrollment_id: string; student_id: string; class_id: string; student_no: string }[]) {
             insertCalls.enrollment++;
-            return {
-              select: () => Promise.resolve({ data: config.enrollmentInsertRows ?? rows.map((_r, i) => ({ enrollment_id: `enroll-${i}`, student_id: `stu-${i}`, student_no: rows[i].student_no })), error: null }),
-            };
+            insertPayloads.enrollment.push(rows);
+            return Promise.resolve({ data: null, error: null });
           },
         };
       }
       if (table === 'student') {
         return {
-          insert(rows: Record<string, unknown>[]) {
+          insert(rows: { student_id: string; name: string }[]) {
             insertCalls.student++;
-            return {
-              select: () => Promise.resolve({ data: config.studentInsertRows ?? rows.map((r, i) => ({ student_id: `stu-${i}`, name: r.name })), error: null }),
-            };
+            insertPayloads.student.push(rows);
+            return Promise.resolve({ data: null, error: null });
           },
           delete() {
             return { in: async () => ({ error: null }) };
@@ -92,8 +95,10 @@ function makeFakeClient(config: {
     },
   } as unknown as SupabaseClient;
 
-  return { client, insertCalls };
+  return { client, insertCalls, insertPayloads };
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function body(fields: Record<string, unknown>): string {
   return JSON.stringify(fields);
@@ -102,15 +107,24 @@ function body(fields: Record<string, unknown>): string {
 const VALID_ENTRIES_BODY = { entries: [{ studentNo: '1', name: '김민준' }] };
 
 describe('POST /api/teacher/classes/:classId/students — successful wiring', () => {
-  test('approved teacher owning the class + valid entries -> 200 ok, student/enrollment written', async () => {
-    const { client, insertCalls } = makeFakeClient({ approved: true, ownsClass: true });
+  test('approved teacher owning the class + valid entries -> 200 ok, student/enrollment written with application-generated ids', async () => {
+    const { client, insertCalls, insertPayloads } = makeFakeClient({ approved: true, ownsClass: true });
 
     const res = await handleTeacherStudentsRequest('POST', `Bearer ${VALID_TOKEN}`, OWNED_CLASS_ID, body(VALID_ENTRIES_BODY), client);
 
     expect(res.httpStatus).toBe(200);
-    expect(res.body).toEqual({ status: 'ok', students: [{ studentId: 'stu-0', enrollmentId: 'enroll-0', studentNo: '1', name: '김민준' }] });
+    const created = (res.body as { status: string; students: { studentId: string; enrollmentId: string; studentNo: string; name: string }[] }).students[0];
+    expect(res.body).toEqual({
+      status: 'ok',
+      students: [{ studentId: expect.stringMatching(UUID_RE), enrollmentId: expect.stringMatching(UUID_RE), studentNo: '1', name: '김민준' }],
+    });
     expect(insertCalls.student).toBe(1);
     expect(insertCalls.enrollment).toBe(1);
+    // 응답의 studentId가 실제로 student insert에 보낸 값과 일치하는지(D11-C6
+    // §4/§5 — RETURNING 순서가 아니라 애플리케이션이 만든 값 자체가
+    // source of truth임을 handler 경계에서도 확인).
+    expect(insertPayloads.student[0]).toEqual([{ student_id: created.studentId, name: '김민준' }]);
+    expect(insertPayloads.enrollment[0]).toEqual([{ enrollment_id: created.enrollmentId, student_id: created.studentId, class_id: OWNED_CLASS_ID, student_no: '1' }]);
   });
 });
 
