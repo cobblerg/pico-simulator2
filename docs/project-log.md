@@ -1578,3 +1578,119 @@ D11-B8~B12 Integration Audit에서 가장 큰 장기 구조적 위험으로 확�
 다음 후보: D11-B Regression Test Gate
 
 목적: 기존 scratch/manual validation 중 핵심 보안·event semantics·feedback ownership·post-feedback observation 시나리오를 repository에 영속적인 regression test로 승격할 수 있는지 설계한다. 이번 docs 단계에서는 test framework를 설치하거나 test 코드를 만들지 않았다.
+
+## 2026-09-27 — D11-B Stabilization 2 — Compact Teacher Timeline
+
+### Status
+CLOSED
+
+### 목적
+Production Teacher Timeline에 `learning_event`가 많이 누적되면 Timeline이 페이지 전체 높이를 크게 늘려 AI 학습과정 분석, 교사 피드백, 피드백 이후 관찰 영역으로 이동하기 어려웠다. 이번 stabilization은 Timeline 데이터를 줄이지 않고 표시 영역만 compact하게 만들어 Teacher workflow 접근성을 개선했다.
+
+### Implementation
+**Default Timeline**:
+- `max-height: 240px`, `overflow-y: auto`
+- 약 7~8개 event 표시
+- 과거 event는 내부 scroll로 탐색
+
+**Latest position**:
+- Timeline render/load 완료 후 최신 event 위치로 자동 scroll
+
+**Expand**:
+- `[확대]` button
+- 동일 Timeline DOM 재사용
+- expanded `max-height: 65vh`
+- 내부 scroll 유지
+- button text → `[축소]`
+- `aria-expanded` 갱신
+
+**Collapse**:
+- compact 240px로 복귀
+- 새 fetch 없음
+- Timeline 재렌더 없음
+
+**Student switching**:
+- expanded state reset
+- button → `[확대]`
+- compact state 복귀
+- 새 학생 Timeline 최신 위치 표시
+
+### Changed Files
+기능 commit: e7a62ea275ca65683423fe832c8d518064531fe0
+
+message: feat: add compact teacher timeline
+
+changed files:
+- src/teacher.html
+- src/ui/teacher-app.ts
+
+기능 commit diff: 2 files changed, 42 insertions(+), 1 deletion(-)
+
+### Explicitly Unchanged
+- server/API changes: NONE
+- DB/schema: NONE
+- migration: NONE
+- AI analysis: UNCHANGED
+- B12 buildPostFeedbackObservation: UNCHANGED
+- MAX_EVENTS=200: UNCHANGED
+- MAX_EVENTS_FOR_AI: UNCHANGED
+- learning_event: UNCHANGED
+- teacher_feedback: UNCHANGED
+- Timeline event ordering: UNCHANGED
+- Timeline event semantics: UNCHANGED
+- Student UI: UNCHANGED
+
+### Semantic Boundary
+Compact Timeline은 learning records 자체를 축약하지 않는다. 서버가 제공하는 기존 최대 200개 event는 그대로 유지된다. 이번 변경은 오직 Teacher UI에서 보이는 viewport를 제한한다.
+
+`[확대]`/`[축소]`/Timeline scroll은 학습 행동이 아니므로 `learning_event`를 생성하지 않는다.
+
+### Production Verification
+Production UI Verification: PASS
+
+실제 Production에서 확인:
+1. 이벤트가 많은 0101 테스트학생에서 Timeline이 compact panel로 제한됨.
+2. 기본 상태에서 내부 scrollbar 정상.
+3. 최신 쪽 event가 기본적으로 표시됨.
+4. Timeline 내부 scroll로 과거 event 탐색 가능.
+5. `[확대]` 클릭 시 button이 `[축소]`로 변경되고 Timeline 영역이 크게 확장됨.
+6. 확대 상태에서도 Timeline 내부 scrollbar 유지.
+7. 동일 Timeline content가 유지됨.
+8. 학생 A의 Timeline을 확대해 둔 상태에서 0102 테스트학생B로 전환.
+9. 학생 전환 후 button이 자동으로 `[확대]`로 reset됨.
+10. Timeline이 compact 상태로 복귀함.
+11. 0102 테스트학생B의 최신 기록이 표시됨.
+12. Timeline 바로 아래에 AI 학습과정 분석 영역이 가까이 나타나 기존의 과도한 page scrolling 문제가 개선됨.
+
+### Explicitly Out of Scope
+이번 stabilization에 포함하지 않은 것:
+- Timeline filtering
+- event grouping
+- mission-open suppression
+- deduplication
+- pagination
+- Timeline search
+- date grouping
+- attempt/correlation
+- server event limit 변경
+- AI event limit 변경
+
+이들은 필요성이 확인될 경우 별도 후속 과제로 판단한다.
+
+### Closure
+D11-B Stabilization 2: CLOSED
+
+Implementation: e7a62ea
+
+Production UI Verification: PASS
+
+DB/schema: NONE
+
+Migration: NONE
+
+### Next Direction
+D11-B Regression Test Gate
+
+목적: B8~B12 및 Stabilization 1~2의 핵심 Teacher Feedback Loop 동작을 반복 가능한 regression checks로 보호한다.
+
+단, Regression Test Gate는 이 docs-only close 작업에서는 시작하지 않는다.
