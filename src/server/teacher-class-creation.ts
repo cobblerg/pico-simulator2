@@ -58,8 +58,10 @@ function toSchoolClass(row: SchoolClassRow): SchoolClass {
 // UNIQUE 제약이 있으므로(migration 20260925090000), 이 테이블에 대한 insert에서
 // 이 코드가 나오면 항상 class_code 충돌이다. 다른 DB 에러(연결 실패, 권한
 // 오류 등)는 이 코드를 갖지 않으므로 "모든 DB 에러를 충돌로 취급"하지 않는다
-// (§4 요구사항).
-const UNIQUE_VIOLATION_CODE = '23505';
+// (§4 요구사항). teacher-roster-creation.ts(D11-C3)의 enrollment UNIQUE(class_id,
+// student_no) 충돌 판정도 이 동일한 Postgres 에러 코드를 재사용한다 —
+// export해 두 파일에서 매직 스트링을 중복 정의하지 않는다.
+export const UNIQUE_VIOLATION_CODE = '23505';
 
 export type InsertSchoolClassResult =
   | { status: 'ok'; schoolClass: SchoolClass }
