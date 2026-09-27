@@ -62,7 +62,7 @@ import { store, startWorkspace, saveWorkspace, Workspace } from './project';
 import { MISSIONS } from './data';
 import { disableWorkspaceAutosave, enableWorkspaceAutosave } from './workspace-autosave';
 import { enableLearningEventSink, disableLearningEventSink } from './learning-event-lifecycle';
-import { activateLearningEventQueue } from './learning-event-sink';
+import { activateLearningEventQueue, flushLearningEventQueue } from './learning-event-sink';
 import { loadStudentFeedback } from './student-feedback';
 
 const SESSION_KEY = 'picosim:student-context';
@@ -390,6 +390,17 @@ export function initStudentEntryGate(): void {
       // 이어지는 reset/logout이 비동기로 시간이 걸리는 동안에도 이
       // 순간부터는 어떤 picosim:event도 큐에 들어가지 않는다).
       disableLearningEventSink();
+
+      // D12-1C2: 로그아웃 API를 부르기 전, 아직 유효한 현재 세션으로
+      // durable queue를 한 번 bounded 시도로 flush한다 — 로그아웃 이후에는
+      // 이 세션으로 다시 보낼 정당한 방법이 없으므로 이 시점이 유일한
+      // 마지막 기회다(D12-1C0 §J 로그아웃 정책). flush가 실패/timeout돼도
+      // 아래 로그아웃 절차는 그대로 진행한다 — 남은 durable queue는
+      // 삭제되지 않고 보존된다(processQueue 자체의 보존 규칙 그대로).
+      const contextBeforeLogout = loadStudentContext();
+      if (contextBeforeLogout) {
+        await flushLearningEventQueue(contextBeforeLogout.enrollmentId);
+      }
 
       // 순서: 자동저장 차단 → 작업 상태 초기화 → 서버 세션 로그아웃 →
       // StudentContext 삭제 → reload. 자동저장을 가장 먼저 끄는 이유: reset이

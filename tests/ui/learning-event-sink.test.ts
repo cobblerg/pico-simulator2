@@ -51,7 +51,7 @@ async function setupSink(fakeStorage: ReturnType<typeof makeFakeLocalStorage>) {
   lifecycle.enableLearningEventSink();
   sink.initLearningEventSink();
 
-  return { sink, fakeWindow };
+  return { sink, lifecycle, fakeWindow };
 }
 
 function dispatch(target: EventTarget, detail: { type: string; activityId: string; data?: unknown }) {
@@ -319,5 +319,234 @@ describe('D12-1C1 — multi-tab resurrection safety', () => {
       expect(remaining).toHaveLength(1);
       expect(remaining[0].clientEventId).toBe('44444444-4444-4444-8444-444444444444');
     });
+  });
+});
+
+// ==========================================================================
+// D12-1C2 — Session / Ownership Recovery
+// ==========================================================================
+
+describe('D12-1C2 — 401: preserve, stop, do not delete', () => {
+  test('A/B/C: 401 -> 현재 item과 나머지 partition 전부 보존, 이후 자동 전송 중단', async () => {
+    const storage = makeFakeLocalStorage();
+    const { fn: fetchMock, calls } = makeFakeFetch([{ status: 401 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // 401 직후에도 item은 그대로 durable queue에 남아 있어야 한다(삭제 없음).
+    const raw = storage.getItem(KEY_A);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toHaveLength(1);
+
+    // 같은 partition에 새 이벤트를 더 추가해도(§11 — durable하게는 쌓이되)
+    // 401 이후에는 자동 전송을 다시 시도하지 않는다(현재 fetch 호출 수가
+        // 더 늘지 않아야 한다).
+    dispatch(fakeWindow, { type: 'checkpoint', activityId: 'm1', data: { ok: true } });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 추가 전송 시도 없음
+    const rawAfter = JSON.parse(storage.getItem(KEY_A) as string);
+    expect(rawAfter).toHaveLength(2); // 두 이벤트 모두 durable하게는 쌓여 있음(NO SILENT LOSS)
+  });
+
+  test('D: 401을 받은 partition과 다른 enrollment의 큐는 전혀 건드리지 않는다', async () => {
+    const storage = makeFakeLocalStorage();
+    const bItems = [{ clientEventId: '55555555-5555-4555-8555-555555555555', activityId: 'm2', eventType: 'run', payload: {}, createdAt: Date.now() }];
+    storage.setItem(KEY_B, JSON.stringify(bItems));
+
+    const { fn: fetchMock } = makeFakeFetch([{ status: 401 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    expect(storage.getItem(KEY_B)).toBe(JSON.stringify(bItems));
+  });
+});
+
+describe('D12-1C2 — same-enrollment reactivation after 401', () => {
+  test('E/P: 같은 enrollment 재활성화 -> 기존 큐 재개, 같은 clientEventId 그대로 전송', async () => {
+    const storage = makeFakeLocalStorage();
+    const { fn: fetchMock, calls } = makeFakeFetch([{ status: 401 }, { status: 200 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const clientEventId = JSON.parse(storage.getItem(KEY_A) as string)[0].clientEventId;
+
+    // 같은 enrollment가 다시 정상적으로 accepted되어 재활성화된다 — 새
+    // clientEventId를 만들지 않고 suspend를 해제한 뒤 재개해야 한다.
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    await vi.waitFor(() => expect(storage.getItem(KEY_A)).toBeNull());
+    expect(calls).toHaveLength(2);
+    expect((calls[0] as { clientEventId: string }).clientEventId).toBe(clientEventId);
+    expect((calls[1] as { clientEventId: string }).clientEventId).toBe(clientEventId); // 재시도도 같은 ID
+  });
+});
+
+describe('D12-1C2 — session change (student A -> student B)', () => {
+  test('F/G/H: A의 큐는 보존되고 전송되지 않으며, B는 독립적으로 활성화/재개된다', async () => {
+    const storage = makeFakeLocalStorage();
+    let resolveA!: (v: Response) => void;
+    const fetchMock = vi.fn((_: string, init?: { body?: string }) => {
+      const body = init?.body ? JSON.parse(init.body) : undefined;
+      if (body?.activityId === 'm1') return new Promise<Response>((resolve) => (resolveA = resolve)); // A의 요청은 응답을 미룬다(pending 유지)
+      return Promise.resolve({ ok: true, status: 200 } as Response);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+
+    // 학생 A로 활성화 후 이벤트 발생 — 응답은 아직 오지 않은 채로 남는다.
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    await vi.waitFor(() => expect(storage.getItem(KEY_A)).not.toBeNull());
+    const aSnapshot = storage.getItem(KEY_A);
+
+    // 학생 B로 전환(같은 브라우저) — A를 건드리지 않고 B만 활성화된다.
+    sink.activateLearningEventQueue(ENROLLMENT_B);
+    dispatch(fakeWindow, { type: 'run', activityId: 'm2', data: {} });
+
+    await vi.waitFor(() => expect(storage.getItem(KEY_B)).toBeNull()); // B는 정상 전송/ACK됨
+
+    // A의 큐는 그동안 전혀 변하지 않았어야 한다(전송되지도, 지워지지도 않음).
+    expect(storage.getItem(KEY_A)).toBe(aSnapshot);
+
+    resolveA({ ok: true, status: 200 } as Response); // 정리(pending 누수 방지)
+  });
+});
+
+describe('D12-1C2 — logout bounded flush', () => {
+  test('I: flush 성공 -> ACK된 item 제거', async () => {
+    const storage = makeFakeLocalStorage();
+    const { fn: fetchMock } = makeFakeFetch([{ status: 200 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { sink } = await setupSink(storage);
+
+    storage.setItem(
+      KEY_A,
+      JSON.stringify([{ clientEventId: '66666666-6666-4666-8666-666666666666', activityId: 'm1', eventType: 'run', payload: {}, createdAt: Date.now() }])
+    );
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    await vi.waitFor(() => expect(storage.getItem(KEY_A)).toBeNull()); // activate 자체가 이미 flush와 동일 경로
+
+    // 새 item을 추가한 뒤 명시적 flushLearningEventQueue로도 정상 동작 확인.
+    storage.setItem(
+      KEY_A,
+      JSON.stringify([{ clientEventId: '77777777-7777-4777-8777-777777777777', activityId: 'm1', eventType: 'run', payload: {}, createdAt: Date.now() }])
+    );
+    await sink.flushLearningEventQueue(ENROLLMENT_A);
+    expect(storage.getItem(KEY_A)).toBeNull();
+  });
+
+  test('J: flush 실패(5xx 소진) -> item 보존', async () => {
+    const storage = makeFakeLocalStorage();
+    storage.setItem(
+      KEY_A,
+      JSON.stringify([{ clientEventId: '88888888-8888-4888-8888-888888888888', activityId: 'm1', eventType: 'run', payload: {}, createdAt: Date.now() }])
+    );
+    const { fn: fetchMock } = makeFakeFetch([{ status: 500 }, { status: 500 }, { status: 500 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { sink } = await setupSink(storage);
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    await sink.flushLearningEventQueue(ENROLLMENT_A);
+    const raw = storage.getItem(KEY_A);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toHaveLength(1);
+  });
+
+  test('K: flush timeout(응답이 끝내 오지 않음) -> item 보존, flush 자체는 bounded 시간 내 끝남', async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = makeFakeLocalStorage();
+      storage.setItem(
+        KEY_A,
+        JSON.stringify([{ clientEventId: '99999999-9999-4999-8999-999999999999', activityId: 'm1', eventType: 'run', payload: {}, createdAt: Date.now() }])
+      );
+      const fetchMock = vi.fn(() => new Promise<Response>(() => {})); // 절대 응답하지 않음
+      vi.stubGlobal('fetch', fetchMock);
+      const { sink } = await setupSink(storage);
+      sink.activateLearningEventQueue(ENROLLMENT_A);
+
+      const flushPromise = sink.flushLearningEventQueue(ENROLLMENT_A);
+      await vi.advanceTimersByTimeAsync(3000); // bounded timeout(2s)을 넘기도록 가짜 시간을 흘려보낸다
+      await flushPromise; // timeout 경로로 반드시 resolve되어야 한다(무기한 대기 아님)
+
+      const raw = storage.getItem(KEY_A);
+      expect(raw).not.toBeNull();
+      expect(JSON.parse(raw as string)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('flushLearningEventQueue는 현재 active하지 않은 enrollment는 절대 건드리지 않는다', async () => {
+    const storage = makeFakeLocalStorage();
+    const bItems = [{ clientEventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', activityId: 'm2', eventType: 'run', payload: {}, createdAt: Date.now() }];
+    storage.setItem(KEY_B, JSON.stringify(bItems));
+    const { fn: fetchMock } = makeFakeFetch([{ status: 200 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { sink } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A); // A만 active, B는 아님
+
+    await sink.flushLearningEventQueue(ENROLLMENT_B); // B는 현재 active가 아니므로 아무 일도 하지 않아야 함
+
+    expect(storage.getItem(KEY_B)).toBe(JSON.stringify(bItems));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('D12-1C2 — logout failure / revert', () => {
+  test('M: 로그아웃 API 실패 후 같은 enrollment로 재활성화 -> 정상 재개', async () => {
+    const storage = makeFakeLocalStorage();
+    storage.setItem(
+      KEY_A,
+      JSON.stringify([{ clientEventId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', activityId: 'm1', eventType: 'run', payload: {}, createdAt: Date.now() }])
+    );
+    const { fn: fetchMock, calls } = makeFakeFetch([{ status: 200 }]);
+    vi.stubGlobal('fetch', fetchMock);
+    const { sink } = await setupSink(storage);
+
+    // "로그아웃 API 자체가 실패해 같은 학생이 계속 쓴다" 시나리오 —
+    // student-entry-ui.ts는 이 경우 같은 enrollmentId로 activateLearningEventQueue를
+    // 다시 호출한다(이미 §M 구현에서 확인). 여기서는 그 재호출이 안전하게
+    // 큐를 재개시키는지만 sink 경계에서 검증한다.
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    await vi.waitFor(() => expect(storage.getItem(KEY_A)).toBeNull());
+    expect((calls[0] as { clientEventId: string }).clientEventId).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  });
+});
+
+describe('D12-1C2 — disable semantics', () => {
+  test('N: sink를 disable해도 durable queue는 삭제되지 않는다(신규 enqueue만 중단)', async () => {
+    const storage = makeFakeLocalStorage();
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink, lifecycle } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    const before = storage.getItem(KEY_A);
+    expect(before).not.toBeNull();
+
+    lifecycle.disableLearningEventSink();
+
+    // disable 이후에는 신규 이벤트가 들어가지 않아야 한다.
+    dispatch(fakeWindow, { type: 'checkpoint', activityId: 'm1', data: { ok: true } });
+    expect(storage.getItem(KEY_A)).toBe(before); // 늘지 않음(신규 enqueue 차단)
+
+    // 하지만 이미 있던 durable queue 자체는 조금도 삭제되지 않는다.
+    expect(JSON.parse(storage.getItem(KEY_A) as string)).toHaveLength(1);
   });
 });
