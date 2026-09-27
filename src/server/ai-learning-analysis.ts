@@ -72,7 +72,7 @@ const MAX_FEEDBACK_LENGTH = 500;
 // 'incomplete AI output: max_output_tokens'가 다시 나타나는지 반드시
 // 확인해야 한다.
 const MAX_OUTPUT_TOKENS = 4000;
-const AI_TIMEOUT_MS = 25_000;
+const AI_TIMEOUT_MS = 45_000;
 
 // ---------- AI 입력 이벤트 ----------
 export type AIAnalysisEvent = {
