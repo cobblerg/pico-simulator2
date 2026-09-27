@@ -550,3 +550,300 @@ describe('D12-1C2 — disable semantics', () => {
     expect(JSON.parse(storage.getItem(KEY_A) as string)).toHaveLength(1);
   });
 });
+
+// ==========================================================================
+// D12-1C3 — Retention + Non-Silent Queue Failure
+// ==========================================================================
+//
+// pruneQueue()는 activateLearningEventQueue() 안에서 동기적으로 실행되고
+// 끝난다(§3/§10 lazy pruning) — 따라서 아래 테스트들은 activate 호출
+// 직후 곧바로(아직 어떤 fetch 응답도 도착하지 않은 시점에) storage를
+// 확인한다. ACK로 인한 제거와 pruning으로 인한 제거를 섞이지 않게 하기
+// 위해 fetch는 항상 "응답하지 않는" mock을 쓴다(테스트 K/N처럼 이미
+// 쓰인 패턴).
+const DAY_MS = 24 * 60 * 60 * 1000;
+const neverRespondingFetch = () => vi.fn(() => new Promise<Response>(() => {}));
+
+function makeItem(overrides: Partial<{ clientEventId: string; activityId: string; eventType: string; payload: unknown; createdAt: number }> = {}) {
+  return {
+    clientEventId: overrides.clientEventId ?? '11111111-2222-4333-8444-555555555555',
+    activityId: overrides.activityId ?? 'm1',
+    eventType: overrides.eventType ?? 'run',
+    payload: overrides.payload ?? {},
+    createdAt: overrides.createdAt ?? Date.now(),
+  };
+}
+
+describe('D12-1C3 — retention (7 days, item-level)', () => {
+  test('A: 7일이 안 된 item은 재활성화(pruning) 시에도 보존된다', async () => {
+    const storage = makeFakeLocalStorage();
+    const fresh = makeItem({ clientEventId: '10101010-1010-4010-8010-101010101010', createdAt: Date.now() - 1 * DAY_MS });
+    storage.setItem(KEY_A, JSON.stringify([fresh]));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { sink } = await setupSink(storage);
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    const raw = storage.getItem(KEY_A);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toHaveLength(1);
+  });
+
+  test('B: 7일이 지난 item은 재활성화(pruning) 시 제거되고 전송 시도조차 되지 않는다', async () => {
+    const storage = makeFakeLocalStorage();
+    const old = makeItem({ clientEventId: '20202020-2020-4020-8020-202020202020', createdAt: Date.now() - 8 * DAY_MS });
+    storage.setItem(KEY_A, JSON.stringify([old]));
+    const fetchMock = neverRespondingFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const { sink } = await setupSink(storage);
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    expect(storage.getItem(KEY_A)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('C: 만료된 item과 아직 유효한 sibling이 섞여 있으면 만료된 것만 제거된다', async () => {
+    const storage = makeFakeLocalStorage();
+    const old = makeItem({ clientEventId: '30303030-3030-4030-8030-303030303030', createdAt: Date.now() - 8 * DAY_MS });
+    const fresh = makeItem({ clientEventId: '40404040-4040-4040-8040-404040404040', eventType: 'checkpoint', createdAt: Date.now() - 1 * DAY_MS });
+    storage.setItem(KEY_A, JSON.stringify([old, fresh]));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { sink } = await setupSink(storage);
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    const raw = JSON.parse(storage.getItem(KEY_A) as string);
+    expect(raw).toHaveLength(1);
+    expect(raw[0].clientEventId).toBe(fresh.clientEventId);
+  });
+
+  test('D: 모든 item이 만료되면 해당 enrollment의 storage key 자체가 제거된다', async () => {
+    const storage = makeFakeLocalStorage();
+    const old1 = makeItem({ clientEventId: '41414141-4141-4141-8141-414141414141', createdAt: Date.now() - 10 * DAY_MS });
+    const old2 = makeItem({ clientEventId: '42424242-4242-4242-8242-424242424242', eventType: 'checkpoint', createdAt: Date.now() - 9 * DAY_MS });
+    storage.setItem(KEY_A, JSON.stringify([old1, old2]));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { sink, fakeWindow } = await setupSink(storage);
+
+    let warningReason: string | undefined;
+    fakeWindow.addEventListener('picosim:event-delivery-warning', (e) => {
+      warningReason = (e as CustomEvent).detail?.reason;
+    });
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    expect(storage.getItem(KEY_A)).toBeNull();
+    expect(warningReason).toBe('expired-events'); // M: expiration 발생 시 경고
+  });
+
+  test('E: 같은 enrollment를 다시 활성화할 때에도 lazy pruning이 수행된다', async () => {
+    const storage = makeFakeLocalStorage();
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { sink } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A); // 최초 활성화 — 큐 없음
+
+    // 시간이 흘러 큐에 만료된 item이 생겼다고 가정한다(직접 주입으로
+    // 시간 경과를 시뮬레이션).
+    const old = makeItem({ clientEventId: '50505050-5050-4050-8050-505050505050', createdAt: Date.now() - 8 * DAY_MS });
+    storage.setItem(KEY_A, JSON.stringify([old]));
+
+    sink.activateLearningEventQueue(ENROLLMENT_A); // 재활성화 -> pruning 재수행
+
+    expect(storage.getItem(KEY_A)).toBeNull();
+  });
+
+  test('F: 다른 enrollment를 활성화해도 비활성 partition의 만료 item은 건드리지 않는다', async () => {
+    const storage = makeFakeLocalStorage();
+    const oldA = makeItem({ clientEventId: '60606060-6060-4060-8060-606060606060', createdAt: Date.now() - 8 * DAY_MS });
+    storage.setItem(KEY_A, JSON.stringify([oldA]));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { sink } = await setupSink(storage);
+
+    sink.activateLearningEventQueue(ENROLLMENT_B); // B만 활성화 — A는 cross-enrollment isolation상 절대 건드리지 않는다
+
+    expect(storage.getItem(KEY_A)).toBe(JSON.stringify([oldA]));
+  });
+
+  test('G: 401로 suspend된 큐도 7일 이내면 재활성화 시 pruning에서 보존된다', async () => {
+    const storage = makeFakeLocalStorage();
+    let callCount = 0;
+    const fetchMock = vi.fn(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve({ ok: false, status: 401 } as Response);
+      return new Promise<Response>(() => {}); // 재시도 응답은 오지 않는다 — ACK 여부와 무관하게 pruning만 확인
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1)); // 401 -> suspend
+
+    sink.activateLearningEventQueue(ENROLLMENT_A); // 재활성화 -> pruneQueue는 동기적으로 즉시 끝난다
+
+    const raw = storage.getItem(KEY_A);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toHaveLength(1);
+  });
+
+  test('S: 미래로 조작된 createdAt도 결국 정상적으로 만료된다(무기한 보존 우회 방지)', async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = makeFakeLocalStorage();
+      const future = makeItem({ clientEventId: '80808080-8080-4080-8080-808080808080', createdAt: Date.now() + 365 * DAY_MS });
+      storage.setItem(KEY_A, JSON.stringify([future]));
+      vi.stubGlobal('fetch', neverRespondingFetch());
+      const { sink } = await setupSink(storage);
+
+      sink.activateLearningEventQueue(ENROLLMENT_A);
+      // 미래로 조작된 값은 "지금 막 생성된 것"으로 취급될 뿐, 즉시
+      // 사라지지도 즉시 특별 대우를 받지도 않는다 — 정상 item처럼 살아남는
+      // 것 자체는 의도된 동작이다.
+      expect(storage.getItem(KEY_A)).not.toBeNull();
+
+      // 8일(가짜 시간)이 지나면 다른 정상 item과 마찬가지로 만료돼야 한다
+      // — 미래 조작값이 "영원히 젊음"을 얻어 retention을 무기한 우회하지
+      // 않는다는 뜻이다.
+      vi.setSystemTime(Date.now() + 8 * DAY_MS);
+      sink.activateLearningEventQueue(ENROLLMENT_A);
+      expect(storage.getItem(KEY_A)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('D12-1C3 — overflow policy (reject-newest, preserve durable)', () => {
+  test('H/I/J: 큐가 가득 차면 기존 item은 보존되고, 새 event는 저장/전송되지 않으며, non-silent 경고가 발생한다', async () => {
+    const storage = makeFakeLocalStorage();
+    const existing = Array.from({ length: 50 }, (_, i) =>
+      makeItem({ clientEventId: `70000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`, createdAt: Date.now() })
+    );
+    storage.setItem(KEY_A, JSON.stringify(existing));
+    const fetchMock = neverRespondingFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+
+    let warningReason: string | undefined;
+    fakeWindow.addEventListener('picosim:event-delivery-warning', (e) => {
+      warningReason = (e as CustomEvent).detail?.reason;
+    });
+
+    sink.activateLearningEventQueue(ENROLLMENT_A); // 기존 50개 item 자체는 정상적으로 재시도 대상이 된다(overflow와 무관)
+    dispatch(fakeWindow, { type: 'checkpoint', activityId: 'm1', data: {} }); // 51번째 — 자리가 없다
+
+    const raw = JSON.parse(storage.getItem(KEY_A) as string);
+    expect(raw).toHaveLength(50); // H: 기존 durable item 50개 그대로(oldest-drop 없음)
+    expect(raw.map((it: { clientEventId: string }) => it.clientEventId)).toEqual(existing.map((it) => it.clientEventId));
+    // I: 새(거부된) event는 애초에 큐에 들어간 적이 없으므로 clientEventId
+    // 자체가 존재하지 않는다 — 어떤 fetch 호출의 body에도 나타날 수
+    // 없다(기존 50개 item의 재시도 전송과는 별개 — eventType으로 구분).
+    const sentEventTypes = fetchMock.mock.calls.map((call) => JSON.parse((call[1] as { body: string }).body).eventType);
+    expect(sentEventTypes).not.toContain('checkpoint');
+    expect(warningReason).toBe('queue-overflow'); // J: non-silent 경고
+  });
+});
+
+describe('D12-1C3 — localStorage write failure', () => {
+  test('K/L: localStorage 쓰기 실패 시 network 전송을 시도하지 않고 non-silent 경고를 보낸다', async () => {
+    const storage = makeFakeLocalStorage();
+    storage.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { fakeWindow, sink } = await setupSink(storage);
+
+    let warningReason: string | undefined;
+    fakeWindow.addEventListener('picosim:event-delivery-warning', (e) => {
+      warningReason = (e as CustomEvent).detail?.reason;
+    });
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+
+    expect(fetchMock).not.toHaveBeenCalled(); // K
+    expect(warningReason).toBe('storage-write-failed'); // L
+  });
+});
+
+describe('D12-1C3 — warning payload boundary & spam control', () => {
+  test('N: 경고 이벤트에는 reason만 실리고 payload/clientEventId는 없다', async () => {
+    const storage = makeFakeLocalStorage();
+    storage.setItem(KEY_A, JSON.stringify(Array.from({ length: 50 }, (_, i) => makeItem({ clientEventId: `71000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}` }))));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { fakeWindow, sink } = await setupSink(storage);
+
+    let detail: Record<string, unknown> | undefined;
+    fakeWindow.addEventListener('picosim:event-delivery-warning', (e) => {
+      detail = (e as CustomEvent).detail;
+    });
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: { secret: 'should-not-leak' } });
+
+    expect(detail).toBeDefined();
+    expect(Object.keys(detail as object)).toEqual(['reason']);
+    expect(JSON.stringify(detail)).not.toContain('should-not-leak');
+    expect(JSON.stringify(detail)).not.toContain('clientEventId');
+  });
+
+  test('O: 같은 이유의 경고가 짧은 시간 안에 반복되면 폭주하지 않는다(throttle)', async () => {
+    const storage = makeFakeLocalStorage();
+    storage.setItem(KEY_A, JSON.stringify(Array.from({ length: 50 }, (_, i) => makeItem({ clientEventId: `72000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}` }))));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { fakeWindow, sink } = await setupSink(storage);
+
+    let warningCount = 0;
+    fakeWindow.addEventListener('picosim:event-delivery-warning', () => {
+      warningCount++;
+    });
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+    // 큐가 계속 가득 찬 상태에서 연속으로 여러 이벤트를 발생시킨다 — 매번
+    // overflow 조건에 부딪히지만 경고는 폭주하면 안 된다.
+    for (let i = 0; i < 10; i++) {
+      dispatch(fakeWindow, { type: 'run', activityId: 'm1', data: {} });
+    }
+
+    expect(warningCount).toBe(1); // throttle 창 안에서는 한 번만
+  });
+});
+
+describe('D12-1C3 — corrupt item pruning', () => {
+  test('P/Q: valid item은 corrupt item과 섞여 있어도 살아남고, corrupt item은 전송되지 않는다', async () => {
+    const storage = makeFakeLocalStorage();
+    const valid = makeItem({ clientEventId: '90909090-9090-4090-8090-909090909090' });
+    const corruptItems = [{ not: 'a valid item' }, valid, { clientEventId: 'not-a-uuid', activityId: 'm1', eventType: 'run', payload: {}, createdAt: Date.now() }];
+    storage.setItem(KEY_A, JSON.stringify(corruptItems));
+    const fetchMock = neverRespondingFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const { sink } = await setupSink(storage);
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    const raw = JSON.parse(storage.getItem(KEY_A) as string);
+    expect(raw).toHaveLength(1); // P: valid sibling만 생존
+    expect(raw[0].clientEventId).toBe(valid.clientEventId);
+    // Q: 전송 시도 자체가 걸리는지는 위 A류 테스트에서 이미 확인되지만,
+    // corrupt item이 애초에 큐에 남아있지 않으므로 sendOne의 body에도
+    // 나타날 수 없다 — 기존 M/N(request body trust boundary) 테스트와
+    // 결합해 이미 전체적으로 보장된다.
+  });
+
+  test('R: corrupt item이 제거되면 non-silent 경고(corrupt-events)가 발생한다', async () => {
+    const storage = makeFakeLocalStorage();
+    storage.setItem(KEY_A, JSON.stringify([{ garbage: true }]));
+    vi.stubGlobal('fetch', neverRespondingFetch());
+    const { fakeWindow, sink } = await setupSink(storage);
+
+    let warningReason: string | undefined;
+    fakeWindow.addEventListener('picosim:event-delivery-warning', (e) => {
+      warningReason = (e as CustomEvent).detail?.reason;
+    });
+
+    sink.activateLearningEventQueue(ENROLLMENT_A);
+
+    expect(warningReason).toBe('corrupt-events');
+  });
+});

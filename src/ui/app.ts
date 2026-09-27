@@ -43,6 +43,19 @@ initStudentEntryGate();
 // activityId 필드 하나만 추가되는 것 외에는 전혀 바뀌지 않는다.
 initLearningEventSink();
 
+// D12-1C3 §8: learning-event-sink.ts는 DOM에 직접 결합하지 않고, "학습
+// 기록 일부가 전송되지 못했다"는 사실만 이 CustomEvent로 알린다(reason만
+// 실림 — payload/clientEventId 등 민감하거나 내부적인 값은 없다). 실제
+// 표시는 기존 toast() 메커니즘을 그대로 재사용한다(새 UI를 만들지 않는다).
+window.addEventListener('picosim:event-delivery-warning', (e) => {
+  const reason = (e as CustomEvent).detail?.reason;
+  const message =
+    reason === 'queue-overflow'
+      ? '학습 기록 저장이 지연되고 있어요. 인터넷 연결을 확인한 뒤 잠시 후 다시 시도하세요.'
+      : '일부 학습 기록을 서버에 저장하지 못했어요.';
+  toast(message, 'warn');
+});
+
 // ---------- 학습 기록 (대시보드 연동용 훅) ----------
 // 모든 학습 행동을 이벤트로 남긴다. 플랫폼에 붙일 때 이 이벤트를 서버로 보내면 된다.
 const learningLog: { t: number; type: string; data: any }[] = [];

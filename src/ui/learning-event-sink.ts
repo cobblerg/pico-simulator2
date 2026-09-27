@@ -82,12 +82,15 @@ const ALLOWED_EVENT_TYPES = new Set([
   'feedback-retry',
 ]);
 
-// 큐가 가득 찼을 때 우선적으로 보존할 이벤트 — 학습 성과 판정(checkpoint)과
-// 실행 결과(error/run-end)는 "저가치" 이벤트보다 먼저 버려지면 안 된다.
-const HIGH_PRIORITY_EVENT_TYPES = new Set(['checkpoint', 'error', 'run-end']);
-
 const MAX_QUEUE_LENGTH = 50;
 const MAX_RETRIES = 2; // 최초 시도 포함 최대 3회
+
+// ---------- D12-1C3: bounded retention + non-silent failure ----------
+//
+// 7일 — item 단위로만 판단한다(§2). 같은 partition 안에 아직 7일이 안 된
+// sibling item이 있으면 절대 함께 지우지 않는다. partition(enrollment) 전체를
+// 한 번에 만료시키는 정책은 금지(§2 "PARTITION 단위 expiration 금지").
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -171,6 +174,101 @@ function removeItemById(enrollmentId: string, clientEventId: string): void {
   const fresh = readQueue(enrollmentId);
   const remaining = fresh.filter((i) => i.clientEventId !== clientEventId);
   writeQueue(enrollmentId, remaining);
+}
+
+// D12-1C3 §8: 이 파일은 DOM에 직접 결합하지 않는다 — "학습 기록 일부가
+// 전송되지 못했다"는 사실만 window CustomEvent로 알리고, 실제 문구/토스트
+// 표시는 이미 존재하는 app.ts의 toast() 메커니즘이 담당한다(§8 "새
+// abstraction을 과도하게 만들지 않는다"). detail에는 reason만 싣는다 —
+// payload/clientEventId 등 민감하거나 내부적인 값은 절대 포함하지 않는다.
+type DeliveryWarningReason = 'storage-write-failed' | 'queue-overflow' | 'expired-events' | 'corrupt-events';
+
+// D12-1C3 §9: 연속 event로 경고가 폭주하지 않도록 "같은 enrollment · 같은
+// 이유"에 대해 짧은 시간 안에는 다시 알리지 않는다. setTimeout/setInterval
+// 등 별도 타이머 프레임워크 없이, 마지막으로 알린 시각과 지금을 비교하는
+// 것만으로 충분하다(간단한 throttle — §9 "복잡한 timer framework 금지").
+const WARNING_THROTTLE_MS = 10_000;
+const lastWarningAt = new Map<string, number>();
+
+function emitDeliveryWarning(enrollmentId: string, reason: DeliveryWarningReason): void {
+  const key = `${enrollmentId}:${reason}`;
+  const now = Date.now();
+  const last = lastWarningAt.get(key);
+  if (last !== undefined && now - last < WARNING_THROTTLE_MS) return;
+  lastWarningAt.set(key, now);
+  try {
+    window.dispatchEvent(new CustomEvent('picosim:event-delivery-warning', { detail: { reason } }));
+  } catch {
+    // 리스너가 없거나 window가 비정상이어도(테스트 환경 등) 큐 자체 동작에
+    // 영향을 주면 안 된다 — 경고는 부가 기능이다.
+  }
+}
+
+// D12-1C3 §3/§10: retention/corrupt-item pruning을 수행하는 유일한 지점 —
+// activateLearningEventQueue()에서만 호출한다(매 network request/enqueue마다
+// 반복하지 않는다, §3). suspended(비활성) partition은 그 enrollment가 다시
+// activate될 때 비로소 여기서 lazy하게 정리된다(§10) — 다른 enrollment가
+// active인 동안 이 함수가 다른 key를 열어보는 일은 없다.
+//
+// §12 createdAt 방어: 미래로 조작되거나 시계 오차로 어긋난 createdAt이
+// "영원히 안 만료되는" 우회로가 되지 않도록 한다. 단순히 나이 계산에서만
+// Math.min(createdAt, now)로 클램프하면 부족하다 — createdAt이 now보다
+// 계속 미래인 한 매번 나이가 0으로 재평가되어, 실제 시계가 그 미래
+// 시점을 지나칠 때까지 사실상 무기한 보존되는 우회가 남는다. 그래서
+// 이 함수는 미래로 찍힌 값을 발견한 첫 pruning 시점에 그 item의
+// createdAt 자체를 now로 고쳐 다시 저장한다(1회성 자기 교정) — 그
+// 이후로는 평범한 item과 동일하게 "고쳐진 시점"부터 정상적으로 7일이
+// 흘러야 만료된다. 즉 미래 조작으로 얻을 수 있는 최대 이득은 "다음
+// activate까지"뿐이며, 그 이후엔 무기한 우회가 불가능하다.
+function pruneQueue(enrollmentId: string): void {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(storageKey(enrollmentId));
+  } catch {
+    return;
+  }
+  if (!raw) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // 완전히 손상된 JSON — readQueue()와 동일하게 보수적으로 그대로 둔다
+    // (§13). 이 값에서 살릴 수 있는 개별 item을 구분할 방법이 없으므로,
+    // 여기서 임의로 삭제하거나 경고하지 않는다.
+    return;
+  }
+  if (!Array.isArray(parsed)) return;
+
+  const valid = parsed.filter(isValidQueueItem);
+  const corruptDropped = parsed.length - valid.length;
+
+  const now = Date.now();
+  const fresh: DurableQueueItem[] = [];
+  let expiredDropped = 0;
+  let futureCorrected = 0;
+  for (const item of valid) {
+    const effectiveCreatedAt = Math.min(item.createdAt, now);
+    if (now - effectiveCreatedAt > RETENTION_MS) {
+      expiredDropped++;
+      continue;
+    }
+    if (effectiveCreatedAt !== item.createdAt) {
+      // 미래로 찍힌 값을 지금 시점으로 영구 교정한다(위 §12 설명 참고).
+      futureCorrected++;
+      fresh.push({ ...item, createdAt: effectiveCreatedAt });
+    } else {
+      fresh.push(item);
+    }
+  }
+
+  if (corruptDropped > 0 || expiredDropped > 0 || futureCorrected > 0) {
+    writeQueue(enrollmentId, fresh); // fresh가 비면 writeQueue()가 key 자체를 제거한다(§2)
+  }
+  // 손상되거나 만료된 item의 제거 모두 "전송되지 못한 학습기록의 소실"이다
+  // (§4/§13) — 조용히 넘기지 않는다. payload/clientEventId는 알리지 않는다.
+  if (corruptDropped > 0) emitDeliveryWarning(enrollmentId, 'corrupt-events');
+  if (expiredDropped > 0) emitDeliveryWarning(enrollmentId, 'expired-events');
 }
 
 // 현재 활성화된 enrollment — 이 값 이외의 어떤 picosim:event-queue:* key도
@@ -369,21 +467,17 @@ function enqueue(item: { activityId: string; eventType: string; payload: unknown
   const enrollmentId = activeEnrollmentId;
   const current = readQueue(enrollmentId);
 
-  // overflow 정책은 기존과 완전히 동일하다(이번 단계에서 정책 자체를
-  // 바꾸지 않는다, §10) — 다만 이제는 evict 대상이 이미 durable하게
-  // 저장돼 있던 item이라는 점이 기존과 다르다(기존엔 메모리에서만
-  // 사라졌다). 전체 손실 위험을 기존보다 악화시키지는 않는다 — 큐가
-  // 50개까지 찬 상태는 이미 새로고침 한 번으로도 전부 잃을 수 있던
-  // 상태였다.
+  // D12-1C3 §5/§6 (정책 변경): 기존엔 capacity 도달 시 이미 durable하게
+  // 저장돼 있던 오래된 item 하나를 조용히 지워 자리를 만들었다("oldest
+  // drop"). 이번 단계부터는 그 방향을 금지한다 — 이미 확보된 durable
+  // item은 그대로 보존하고, 대신 "지금 막 들어온 새 event"를 durable
+  // queue에 기록하지 않는다(reject newest). 이 event는 network으로도
+  // 우회해서 보내지 않는다 — "저장은 실패했지만 일단 보내자"는 방식은
+  // persist-before-send invariant를 깨뜨린다. 대신 학생에게 조용히 넘어가지
+  // 않도록 non-silent 경고를 보낸다.
   if (current.length >= MAX_QUEUE_LENGTH) {
-    let idx = -1;
-    for (let i = 1; i < current.length; i++) {
-      if (!HIGH_PRIORITY_EVENT_TYPES.has(current[i].eventType)) {
-        idx = i;
-        break;
-      }
-    }
-    current.splice(idx === -1 ? 1 : idx, 1);
+    emitDeliveryWarning(enrollmentId, 'queue-overflow');
+    return;
   }
 
   const durableItem: DurableQueueItem = {
@@ -398,9 +492,12 @@ function enqueue(item: { activityId: string; eventType: string; payload: unknown
   // PERSIST-BEFORE-SEND(§5의 핵심 invariant): localStorage 기록이 실패하면
   // 이 이벤트는 durable하다고 간주하지 않으며, network send도 시도하지
   // 않는다 — "저장되지 않았는데 전송을 시도"하는 순서 역전을 만들지
-  // 않는다.
+  // 않는다. D12-1C3 §7: 이 실패도 조용히 넘기지 않고 학생에게 알린다.
   const persisted = writeQueue(enrollmentId, current);
-  if (!persisted) return;
+  if (!persisted) {
+    emitDeliveryWarning(enrollmentId, 'storage-write-failed');
+    return;
+  }
 
   // D12-1C2: 이 partition이 401로 suspend된 상태라면 새 이벤트도 durable
   // queue에는 그대로 쌓이지만(NO SILENT LOSS — 위 writeQueue는 이미
@@ -430,6 +527,11 @@ function enqueue(item: { activityId: string; eventType: string; payload: unknown
 // same-enrollment recovery).
 export function activateLearningEventQueue(enrollmentId: string): void {
   activeEnrollmentId = enrollmentId;
+  // D12-1C3 §3/§10: retention/corrupt-item lazy pruning은 이 시점에서만
+  // 수행한다(process/enqueue 경로에는 넣지 않는다 — 중복 구현·불필요한
+  // 반복 방지). processQueue()가 만료된 item을 보내려 시도하지 않도록
+  // suspend 해제·재개보다 먼저 실행한다.
+  pruneQueue(enrollmentId);
   if (suspendedEnrollmentId === enrollmentId) {
     suspendedEnrollmentId = null;
   }
