@@ -2036,3 +2036,142 @@ Real Supabase/Google OAuth/OpenAI: NOT USED
 
 ### Next Direction
 **Pilot Staging Smoke Test** — 위 체크리스트를 실제 Supabase 프로젝트 + 실제 Google 계정 + 실제 OpenAI key가 설정된 staging 환경에서 사람이 직접 수행한다. 이 검증이 끝나기 전까지 새 기능 번호(D11-D 등)를 임의로 시작하지 않는다.
+
+## D11-C Production Smoke Test & Pilot V1 Close
+
+### Status
+CLOSED
+
+### Purpose
+D11-C C0~C7 완료 이후, 실제 Production 환경에서 Pilot V1 핵심 vertical slice(교사 학급/명단 생성 → 학생 입장 → 학습 → 교사 리뷰 → 학생 후속)를 사용자가 직접 수동 검증했다. 이 entry는 그 결과를 기록하고 D11-C/Pilot V1의 현재 상태를 공식적으로 닫기 위한 것이다.
+
+### Repository Baseline
+Smoke-test close 작업 시작 전: `de923d5ad5b7d6fd356b9925d2fbed44fc76e00d`(D11-C7 Regression Gate & Project Closure commit)
+
+### Automated Regression Baseline
+D11-C7 기준: 15 test files, 92 tests passed. 아래 §Production Manual Smoke Test는 이 automated regression과 **별개의 증거**다 — 서로 혼동하지 않는다.
+
+### Production Environment
+Production alias: `https://pico-simulator2.vercel.app`
+
+Preview deployment URL은 Vercel Deployment Protection(별도 platform 레벨 인증 게이트, 애플리케이션 인증과 무관)이 있어 비로그인 접근이 Vercel 로그인 화면으로 리다이렉트된다 — 그래서 이번 Pilot smoke validation은 **Production alias 기준**으로 수행했다.
+
+### Production Manual Smoke Test
+**user-observed production manual verification** — 2026-09-27, 사용자가 `https://pico-simulator2.vercel.app`에서 직접 수행하고 확인했다(Claude가 직접 production을 조작하거나 테스트하지 않았다).
+
+**Teacher**
+1. Production 학생 진입 화면 정상 표시
+2. Production `teacher.html` 진입
+3. Google/Supabase 교사 로그인 성공
+4. 승인된 교사 계정으로 "교사 인증 성공" 확인
+5. 기존 담당 학급 조회 성공
+6. 새 학급 생성 성공 — 2026학년도 / 2학년 / 1반, 생성된 classCode `N74MY4`
+7. 생성한 학급이 담당 학급 목록에 표시됨
+8. 해당 학급 선택 성공
+9. classCode 표시 및 학생 등록 UI 정상 표시
+10. 학생 단건 등록 성공 — studentNo `1`, name `테스트학생`
+11. 새로고침 후에도 생성한 학급과 학생이 서버에서 다시 조회되어 표시됨
+
+**Student**
+12. 학생이 Production 학생 화면에서 classCode + studentNo + name으로 정상 입장
+13. PicoSim 학생 학습 화면 정상 표시
+14. Mission 1 "내장 LED 켜고 끄기" 수행
+15. 코드 실행 성공
+16. 실행 완료 기록 생성
+17. checkpoint 통과
+
+**Teacher**
+18. 교사 화면에서 학생 Timeline 조회 성공 — 코드 실행 / 실행 완료 / 체크포인트 · 통과 확인
+19. 교사가 "AI 학습과정 분석" 실행
+20. 실제 AI 분석 결과 정상 표시 — 학습과정 요약 / 관찰 근거 / 도움 활용 / 재시도·변화 / 교사 확인 포인트 구조로 표시됨
+21. 교사가 학생에게 피드백 저장 — "미션 1을 잘 해결했습니다. 다음에는 LED가 켜지는 시간을 2초로 바꾸어 다시 실행해 보세요."
+
+**Student**
+22. 학생 화면에서 교사 피드백 표시 확인
+23. 학생이 "확인하고 다시 해보기" 선택
+24. 학생이 다시 코드를 실행
+25. checkpoint 재통과
+
+**Teacher**
+26. 교사 화면에서 새로고침 후 학급 → 학생을 다시 선택
+27. Timeline에 후속 기록까지 영속적으로 표시됨 — 교사 피드백 후 다시 시도 선택 / 코드 실행 / 실행 완료 / 체크포인트 · 통과
+
+### Verified Vertical Slice
+```
+Teacher: class creation → roster registration → student
+Student: identity entry → PicoSim mission → run → checkpoint
+Teacher: timeline → AI analysis → feedback
+Student: feedback display → retry → rerun → checkpoint
+Teacher: timeline refresh/re-observation
+```
+
+### Persistence Verified
+- 새로고침 후 학급 재조회 — manual evidence(§11) + 기존 architecture evidence(`loadTeacherClasses()`가 매번 `GET /api/teacher/classes`를 다시 호출, 로컬 캐시 없음)
+- 새로고침 후 학생 재조회 — manual evidence(§11) + 기존 architecture evidence(`selectClass()`가 매번 `GET .../students`를 다시 호출)
+- learning event 재조회 — manual evidence(§18, §27) + 기존 architecture evidence(`learning_event`는 append-only 영속 테이블, `selectStudent()`가 매번 서버에서 다시 조회)
+- feedback persistence — manual evidence(§21~22) + 기존 architecture evidence(`teacher_feedback` 테이블, D11-B10)
+- feedback-retry event persistence — manual evidence(§23, §27) + 기존 architecture evidence(`learning_event`에 `feedback-retry` type으로 저장, D11-B11)
+- retry 이후 run/run-end/checkpoint 기록 재조회 — manual evidence(§27) + 기존 architecture evidence(동일 `learning_event` 조회 경로)
+
+브라우저 임시 상태만으로 보인 것이 아니라, 서버/DB 재조회 경로를 통해 복구되는 기존 architecture와 manual observation이 정확히 일치했다.
+
+### AI Boundary Verified
+- teacher-triggered AI analysis(학생 선택만으로는 자동 호출되지 않음, 버튼 클릭 필요)
+- 실제 Production AI response 성공(manual evidence)
+- AI 분석은 참고용("AI 생성 · 참고용, 공식 평가 아님" 고정 문구)
+- teacher-in-the-loop 유지 — AI 분석 자체가 자동으로 `teacher_feedback`에 저장되지 않음
+- 교사가 명시적으로 feedback을 작성/저장(§21)해야만 학생에게 전달됨
+
+### Student Identity Boundary
+기존 D11-C1 보호 사항이 이번 production smoke test 도중에도 변경되지 않았다:
+- classCode + studentNo + name 3필드 인증
+- roster-backed entry(사전 등록 기반, 자가 생성 없음)
+- Student / Enrollment identity 분리
+- name mismatch / unknown student / unknown class → generic rejection
+- internal rejection reason non-enumeration contract 유지
+
+이번 close 작업에서 이 production behavior는 **수정하지 않았다.**
+
+### Exceptional Student Flow
+Pilot V1 정책 그대로 유지:
+- 명단에 없는 전입생/임시학생을 자동 생성하지 않는다.
+- 교사가 teacher UI의 단건 학생 등록(single student add)으로 먼저 등록한 뒤, 학생이 동일한 entry 화면에서 다시 입장한다.
+- pending-student system 없음(D11-C0 확정 정책 그대로).
+
+### Security Hygiene
+- `.env.local`: git tracked 아님을 `git ls-files`로 확인
+- `.vercel`: git tracked 아님을 `git ls-files`로 확인
+- local env files ignore rule commit: `92adc96fd18d2b794aa5f47b7c84b0c4cf31c707`(`chore: ignore local environment files`, `.gitignore`에 `.env.local`/`.vercel`/`.env*` 추가)
+- secret 값은 어떤 보고서/커밋에도 출력·기록하지 않았다
+
+### Pilot V1 Status
+D11-C Teacher Class & Roster Management: **C0–C7 COMPLETE**
+
+Pilot V1 핵심 vertical slice: **Production manual smoke test COMPLETE**
+
+이것은 전체 장기 PRD 완료를 의미하지 않는다. Pilot V1은 현재 Pico/RP2040 수업 vertical slice다. Digital Society / generic content plugin / multi-subject architecture / real Student LLM Coach 등 장기 방향은 여전히 deferred다.
+
+### Known Deferred / Non-blockers
+- 실제 browser automation framework(Playwright 등) 없음
+- 실제 Google OAuth automated E2E 없음
+- actual Supabase write 자동 테스트는 fake client 중심
+- actual OpenAI 자동 테스트는 fake provider 중심
+- `.env.local` 자동 build loading은 개발 편의 개선 후보(dotenv 등 미도입)
+- classCode regeneration UI/flow deferred
+- class deletion deferred
+- history-bearing enrollment deletion/soft delete deferred
+- real Student AI Coach deferred
+- generic content/plugin architecture deferred
+- Digital Society subject integration deferred
+
+위 항목들은 현재 **Pilot V1 Production smoke completion의 blocker가 아니다** — 의도적으로 이번 범위 밖에 남겨둔 것이다.
+
+### Closure
+D11-C: **CLOSED**
+
+Pilot V1 core vertical slice: **CODE COMPLETE + PRODUCTION MANUAL SMOKE VERIFIED**
+
+("전체 제품 완성"이라는 표현은 사용하지 않는다 — 위 Known Deferred 항목들이 여전히 남아 있다.)
+
+### Next Direction
+다음 단계 후보(우선순위 결정은 별도 세션에서): classCode regeneration, enrollment 삭제 정책, 교사 학급 단위 analytics, 콘텐츠 플러그인 구조 확장. 새 기능 번호(D11-D 등)는 이 entry만으로 임의로 시작하지 않는다 — 별도 명시적 요청이 있을 때 시작한다.
