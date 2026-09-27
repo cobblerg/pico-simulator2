@@ -50,6 +50,9 @@ textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line)
 .ai-subhead{font-size:13px;font-weight:700;margin:8px 0 2px}
 .t-ai-observations{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 .t-ai-observations li{font-size:13px}
+.row input{flex:1;min-width:0}
+input[type=text],input[type=number]{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}
+.t-plain-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
 </style>
 </head>
 <body>
@@ -69,11 +72,52 @@ textarea{font:14px/1.5 var(--font);padding:8px 10px;border:1px solid var(--line)
     <p><b id="t-name"></b> 선생님</p>
     <p class="ok">교사 인증 성공</p>
 
+    <div id="t-class-create-section">
+      <h2 class="eyebrow">새 학급 만들기</h2>
+      <form id="t-cc-form" class="row">
+        <input id="t-cc-schoolyear" type="text" placeholder="학년도 (예: 2026)">
+        <input id="t-cc-grade" type="number" placeholder="학년" min="1">
+        <input id="t-cc-classnumber" type="number" placeholder="반" min="1">
+        <button id="t-cc-submit" class="btn small" type="submit">학급 만들기</button>
+      </form>
+      <p class="err" id="t-cc-error" hidden></p>
+      <p class="ok" id="t-cc-success" hidden></p>
+    </div>
+
     <div id="t-classes-loading" hidden><p class="msg">담당 학급을 불러오는 중...</p></div>
     <div id="t-classes-empty" hidden><p class="muted">아직 배정된 학급이 없습니다.</p></div>
     <div id="t-classes-list" hidden>
       <h2 class="eyebrow">담당 학급</h2>
       <ul id="t-classes-ul" class="t-list"></ul>
+    </div>
+
+    <div id="t-selected-class-info" hidden>
+      <p class="eyebrow">선택된 학급 코드</p>
+      <p class="row"><b id="t-selected-class-code"></b> <button id="t-copy-class-code" class="btn ghost small" type="button">코드 복사</button></p>
+    </div>
+
+    <div id="t-roster-section" hidden>
+      <h2 class="eyebrow">학생 등록</h2>
+      <form id="t-sa-form" class="row">
+        <input id="t-sa-studentno" type="text" placeholder="학번">
+        <input id="t-sa-name" type="text" placeholder="이름">
+        <button id="t-sa-submit" class="btn small" type="submit">학생 추가</button>
+      </form>
+      <p class="err" id="t-sa-error" hidden></p>
+
+      <h3 class="ai-subhead">여러 학생 한 번에 등록</h3>
+      <p class="muted">한 줄에 한 명씩, "학번 이름" 형식으로 붙여넣으세요.</p>
+      <textarea id="t-bulk-input" rows="4" placeholder="1 김민준&#10;2 이서연&#10;3 박지호"></textarea>
+      <div id="t-bulk-preview" hidden>
+        <p class="muted" id="t-bulk-preview-summary"></p>
+        <ul id="t-bulk-preview-ul" class="t-plain-list"></ul>
+      </div>
+      <button id="t-bulk-submit" class="btn small" type="button" disabled>일괄 등록</button>
+      <div id="t-bulk-error" hidden>
+        <p class="err" id="t-bulk-error-msg"></p>
+        <ul id="t-bulk-error-ul" class="t-plain-list"></ul>
+      </div>
+      <p class="ok" id="t-bulk-success" hidden></p>
     </div>
 
     <div id="t-students-loading" hidden><p class="msg">학생 목록을 불러오는 중...</p></div>

@@ -48,6 +48,7 @@
 // SUPABASE_SECRET_KEY/STUDENT_SESSION_SECRET와는 신뢰 등급이 완전히 다르다)
 // — 이 두 전역은 이 파일이 정의하지 않는다, build.mjs가 정의해 준다.
 import { createClient, Session } from '@supabase/supabase-js';
+import { parseRosterPasteText, rosterValidationReasonToMessage, type RosterValidationReason } from './teacher-roster-parser';
 
 declare const __TEACHER_SUPABASE_URL__: string;
 declare const __TEACHER_SUPABASE_ANON_KEY__: string;
@@ -68,10 +69,39 @@ const nameEl = el<HTMLElement>('t-name');
 const loginBtn = el<HTMLButtonElement>('t-login');
 const logoutBtn = el<HTMLButtonElement>('t-logout');
 
+const classCreateForm = el<HTMLFormElement>('t-cc-form');
+const ccSchoolYearInput = el<HTMLInputElement>('t-cc-schoolyear');
+const ccGradeInput = el<HTMLInputElement>('t-cc-grade');
+const ccClassNumberInput = el<HTMLInputElement>('t-cc-classnumber');
+const ccSubmitBtn = el<HTMLButtonElement>('t-cc-submit');
+const ccErrorEl = el<HTMLElement>('t-cc-error');
+const ccSuccessEl = el<HTMLElement>('t-cc-success');
+
 const classesLoadingEl = el<HTMLElement>('t-classes-loading');
 const classesEmptyEl = el<HTMLElement>('t-classes-empty');
 const classesListEl = el<HTMLElement>('t-classes-list');
 const classesUl = el<HTMLUListElement>('t-classes-ul');
+
+const selectedClassInfoEl = el<HTMLElement>('t-selected-class-info');
+const selectedClassCodeEl = el<HTMLElement>('t-selected-class-code');
+const copyClassCodeBtn = el<HTMLButtonElement>('t-copy-class-code');
+
+const rosterSectionEl = el<HTMLElement>('t-roster-section');
+const saForm = el<HTMLFormElement>('t-sa-form');
+const saStudentNoInput = el<HTMLInputElement>('t-sa-studentno');
+const saNameInput = el<HTMLInputElement>('t-sa-name');
+const saSubmitBtn = el<HTMLButtonElement>('t-sa-submit');
+const saErrorEl = el<HTMLElement>('t-sa-error');
+const bulkInput = el<HTMLTextAreaElement>('t-bulk-input');
+const bulkPreviewEl = el<HTMLElement>('t-bulk-preview');
+const bulkPreviewSummaryEl = el<HTMLElement>('t-bulk-preview-summary');
+const bulkPreviewUl = el<HTMLUListElement>('t-bulk-preview-ul');
+const bulkSubmitBtn = el<HTMLButtonElement>('t-bulk-submit');
+const bulkErrorEl = el<HTMLElement>('t-bulk-error');
+const bulkErrorMsgEl = el<HTMLElement>('t-bulk-error-msg');
+const bulkErrorUl = el<HTMLUListElement>('t-bulk-error-ul');
+const bulkSuccessEl = el<HTMLElement>('t-bulk-success');
+
 const studentsLoadingEl = el<HTMLElement>('t-students-loading');
 const studentsEmptyEl = el<HTMLElement>('t-students-empty');
 const studentsListEl = el<HTMLElement>('t-students-list');
@@ -176,7 +206,14 @@ const STUDENTS_VISIBLE_STATES = new Set<ApprovedSubState>([
   'error',
 ]);
 
+// D11-C4: 학생 등록 성공 뒤 "no-students → students"로만 안전하게 승격시키기
+// 위해 현재 하위 상태를 기억한다(§3/§5/§6.E 요구사항 — 이미 timeline/error
+// 등 더 깊은 상태에 있을 때 등록 성공으로 그 상태를 되돌리면 안 된다). 이
+// 변수 하나 추가 외에 기존 상태기계 구조는 바꾸지 않는다.
+let approvedSubState: ApprovedSubState = null;
+
 function setApprovedSubState(state: ApprovedSubState): void {
+  approvedSubState = state;
   classesLoadingEl.hidden = state !== 'loading-classes';
   classesEmptyEl.hidden = state !== 'no-classes';
   classesListEl.hidden = !CLASSES_VISIBLE_STATES.has(state);
@@ -238,7 +275,20 @@ type TeacherClassSummary = {
 };
 type TeacherClassesResponse = { status: 'ok'; classes: TeacherClassSummary[] } | { status: 'not_approved' };
 
+// teacher-classes-handler.ts POST 성공 응답과 동일한 shape(D11-C2). classCode는
+// 서버가 생성한 값을 그대로 받아 화면에 표시한다 — 이 파일이 classCode를
+// 만들거나 요청 body에 넣지 않는다.
+type TeacherClassCreateResponse = { status: 'ok'; schoolClass: TeacherClassSummary } | { status: 'not_approved' };
+
 type StudentSummary = { enrollmentId: string; studentId: string; studentNo: string; name: string };
+
+// teacher-roster-creation.ts(D11-C3)의 RegisterRosterCreatedEntry/
+// RegisterRosterValidationError와 동일한 shape. 단건 등록도 bulk와 같은
+// 경로(entries 배열 길이 1)로 보내므로(D11-C3 §14) 응답 타입도 하나만
+// 정의한다 — 별도 single 응답 타입을 만들지 않는다.
+type RegisterRosterCreatedEntry = { studentId: string; enrollmentId: string; studentNo: string; name: string };
+type RosterValidationErrorItem = { index: number; studentNo: string; reason: RosterValidationReason };
+type TeacherRosterRegisterResponse = { status: 'ok'; students: RegisterRosterCreatedEntry[] } | { status: 'not_approved' };
 // 서버(teacher-students-handler.ts)는 실제로 두 status를 돌려줄 수 있다 —
 // not_approved(세션 도중 승인이 취소된 드문 경우)를 빠뜨리면 body.students가
 // undefined인 채로 renderStudentList()가 실행돼 TypeError가 나고, 그 예외가
@@ -390,6 +440,10 @@ let currentClasses: TeacherClassSummary[] = [];
 let selectedClassId: string | null = null;
 let currentStudents: StudentSummary[] = [];
 let selectedStudentId: string | null = null;
+// 붙여넣기 textarea를 파싱한 결과를 보관한다 — 이 값이 실제 POST body가
+// 되므로, textarea 원문을 다시 읽어 파싱하지 않고 항상 이 배열을 그대로
+// 전송한다(preview에 보인 것과 실제 전송되는 것이 항상 같음을 보장).
+let currentBulkEntries: ReturnType<typeof parseRosterPasteText> = [];
 let retryAction: (() => void) | null = null;
 
 let currentFeedback: TeacherFeedbackItem[] = [];
@@ -419,6 +473,23 @@ function resetDashboardState(): void {
   currentStudents = [];
   selectedStudentId = null;
   retryAction = null;
+  // D11-C4: 학급 생성 폼(어떤 학급에도 종속되지 않음)과 학급별 로스터
+  // 관리 UI(선택된 학급 코드, 단건/bulk 등록 폼)를 로그아웃/교사 전환 시
+  // 완전히 초기화한다 — 이전 교사가 입력하던 값이 다음 교사 화면에
+  // 남아있지 않게 한다.
+  classCreateForm.reset();
+  ccErrorEl.hidden = true;
+  ccSuccessEl.hidden = true;
+  selectedClassInfoEl.hidden = true;
+  selectedClassCodeEl.textContent = '';
+  rosterSectionEl.hidden = true;
+  saForm.reset();
+  saErrorEl.hidden = true;
+  bulkInput.value = '';
+  currentBulkEntries = [];
+  renderBulkPreview();
+  bulkErrorEl.hidden = true;
+  bulkSuccessEl.hidden = true;
   timelineStudentEl.textContent = '';
   feedbackSectionEl.hidden = true;
   currentFeedback = [];
@@ -501,6 +572,316 @@ function renderStudentList(): void {
     });
     studentsTbody.appendChild(tr);
   }
+}
+
+// ---------- D11-C4: 학급 생성 + 로스터(단건/bulk) 등록 ----------
+//
+// 이 블록의 함수들은 기존 selectClass/selectStudent의 fetch/isStale 패턴을
+// 그대로 따른다 — 요청 시작 시점의 accessToken/classId를 캡처해 응답
+// 처리 직전 현재 선택과 비교하고, stale이면 UI 반영을 건너뛴다.
+
+// currentBulkEntries(파싱 결과)만 그린다 — textarea 원문을 다시 파싱하지
+// 않는다. 미리보기는 최대 20행만 렌더링하고 나머지는 "외 N명"으로 요약한다
+// (§10 "UI 복잡도가 크게 증가하면 parsed count + 첫 몇 행 preview 정도로
+// 단순화" — 붙여넣은 인원이 아주 많아도 DOM이 과도하게 커지지 않게 한다).
+const BULK_PREVIEW_MAX_ROWS = 20;
+
+function renderBulkPreview(): void {
+  bulkPreviewUl.innerHTML = '';
+  if (currentBulkEntries.length === 0) {
+    bulkPreviewEl.hidden = true;
+    bulkSubmitBtn.disabled = true;
+    return;
+  }
+  bulkPreviewEl.hidden = false;
+  bulkPreviewSummaryEl.textContent = `등록 예정 ${currentBulkEntries.length}명`;
+  for (const entry of currentBulkEntries.slice(0, BULK_PREVIEW_MAX_ROWS)) {
+    const li = document.createElement('li');
+    li.textContent = `${entry.studentNo} | ${entry.name.length > 0 ? entry.name : '(이름 없음)'}`;
+    bulkPreviewUl.appendChild(li);
+  }
+  if (currentBulkEntries.length > BULK_PREVIEW_MAX_ROWS) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = `외 ${currentBulkEntries.length - BULK_PREVIEW_MAX_ROWS}명`;
+    bulkPreviewUl.appendChild(li);
+  }
+  bulkSubmitBtn.disabled = false;
+}
+
+// 서버(teacher-roster-creation.ts)가 구분하는 결과를 그대로 discriminated
+// union으로 옮긴다 — reason 문자열 등은 여기서 해석하지 않고 호출부가
+// rosterValidationReasonToMessage()로 변환한다.
+type RegisterRosterOutcome =
+  | { kind: 'ok'; created: RegisterRosterCreatedEntry[] }
+  | { kind: 'validation-failed'; errors: RosterValidationErrorItem[] }
+  | { kind: 'duplicate-conflict' }
+  | { kind: 'unauthorized' }
+  | { kind: 'not-approved' }
+  | { kind: 'error' };
+
+// accessToken/classId를 전역 상태(currentAccessToken/selectedClassId)에서
+// 읽지 않고 인자로만 받는다 — 호출부(addSingleStudent/submitBulkRoster)가
+// 각자 요청 시작 시점의 값을 캡처해 넘기고, 응답을 받은 뒤 stale 여부를
+// 직접 판단한다(selectClass/selectStudent와 동일한 책임 분리).
+async function postRosterEntries(
+  accessToken: string,
+  classId: string,
+  entries: { studentNo: string; name: string }[]
+): Promise<RegisterRosterOutcome> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/teacher/classes/${encodeURIComponent(classId)}/students`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries }),
+    });
+  } catch {
+    return { kind: 'error' };
+  }
+
+  if (res.status === 401) return { kind: 'unauthorized' };
+  if (res.status === 409) return { kind: 'duplicate-conflict' };
+  if (res.status === 400) {
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      return { kind: 'error' };
+    }
+    const details = (body as { details?: unknown }).details;
+    if (Array.isArray(details)) {
+      return { kind: 'validation-failed', errors: details as RosterValidationErrorItem[] };
+    }
+    return { kind: 'error' };
+  }
+  if (!res.ok) return { kind: 'error' };
+
+  let body: TeacherRosterRegisterResponse;
+  try {
+    body = (await res.json()) as TeacherRosterRegisterResponse;
+  } catch {
+    return { kind: 'error' };
+  }
+  if (body.status !== 'ok') return { kind: 'not-approved' };
+  return { kind: 'ok', created: body.students };
+}
+
+// 생성된 학생을 currentStudents에 이어붙이고 다시 그린다 — GET을 다시
+// 호출하지 않는다(서버 응답이 이미 필요한 identity 전부를 담고 있으므로
+// "local state 안전 업데이트" 쪽을 선택했다, §8). 현재 하위 상태가
+// 'no-students'일 때만 'students'로 승격한다 — 이미 Timeline/오류 등 더
+// 깊은 상태에 있으면 그 화면을 그대로 유지한다(등록 성공 때문에 보고
+// 있던 학생 Timeline이 사라지면 안 된다).
+function appendCreatedStudents(created: RegisterRosterCreatedEntry[]): void {
+  currentStudents = [...currentStudents, ...created.map((c) => ({ enrollmentId: c.enrollmentId, studentId: c.studentId, studentNo: c.studentNo, name: c.name }))];
+  renderStudentList();
+  if (approvedSubState === 'no-students') {
+    setApprovedSubState('students');
+  }
+}
+
+function renderBulkValidationErrors(errors: RosterValidationErrorItem[]): void {
+  bulkErrorMsgEl.textContent = '등록되지 않았습니다. 표시된 항목을 수정한 뒤 다시 시도하세요.';
+  bulkErrorUl.innerHTML = '';
+  for (const e of errors) {
+    const li = document.createElement('li');
+    const noLabel = e.studentNo.length > 0 ? e.studentNo : '(없음)';
+    li.textContent = `${e.index + 1}번째 줄(학번 ${noLabel}): ${rosterValidationReasonToMessage(e.reason)}`;
+    bulkErrorUl.appendChild(li);
+  }
+  bulkSuccessEl.hidden = true;
+  bulkErrorEl.hidden = false;
+}
+
+function showBulkGenericError(message: string): void {
+  bulkErrorMsgEl.textContent = message;
+  bulkErrorUl.innerHTML = '';
+  bulkSuccessEl.hidden = true;
+  bulkErrorEl.hidden = false;
+}
+
+async function createClass(): Promise<void> {
+  if (!currentAccessToken) return;
+  const schoolYear = ccSchoolYearInput.value.trim();
+  const grade = Number(ccGradeInput.value);
+  const classNumber = Number(ccClassNumberInput.value);
+
+  ccErrorEl.hidden = true;
+  ccSuccessEl.hidden = true;
+
+  // UI validation만 추가한다(§4) — server contract(C2)는 그대로 둔다.
+  // 임의의 상한(예: grade <= 6)은 만들지 않는다.
+  if (schoolYear.length === 0) {
+    ccErrorEl.textContent = '학년도를 입력하세요.';
+    ccErrorEl.hidden = false;
+    return;
+  }
+  if (!Number.isInteger(grade) || grade < 1) {
+    ccErrorEl.textContent = '학년은 1 이상의 숫자여야 합니다.';
+    ccErrorEl.hidden = false;
+    return;
+  }
+  if (!Number.isInteger(classNumber) || classNumber < 1) {
+    ccErrorEl.textContent = '반은 1 이상의 숫자여야 합니다.';
+    ccErrorEl.hidden = false;
+    return;
+  }
+
+  const requestToken = currentAccessToken;
+  const isStale = () => requestToken !== currentAccessToken;
+
+  ccSubmitBtn.disabled = true;
+  try {
+    const res = await fetch('/api/teacher/classes', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${requestToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schoolYear, grade, classNumber }),
+    });
+    if (isStale()) return;
+    if (res.status === 401) {
+      resetDashboardState();
+      setUiState('logged-out');
+      return;
+    }
+    if (!res.ok) {
+      ccErrorEl.textContent = '학급을 만들지 못했습니다. 잠시 후 다시 시도해주세요.';
+      ccErrorEl.hidden = false;
+      return;
+    }
+    const body = (await res.json()) as TeacherClassCreateResponse;
+    if (isStale()) return;
+    if (body.status !== 'ok') {
+      resetDashboardState();
+      setUiState('not-approved');
+      return;
+    }
+    currentClasses = [...currentClasses, body.schoolClass];
+    classCreateForm.reset();
+    ccSuccessEl.textContent = `학급이 생성되었습니다. 학급 코드: ${body.schoolClass.classCode}`;
+    ccSuccessEl.hidden = false;
+    // 새 학급을 곧바로 선택 학급으로 설정한다(§6 "가능하면 새 학급을 현재
+    // 선택 학급으로 설정") — selectClass() 자신이 renderClassList()와
+    // ApprovedSubState 전환(loading-students → students/no-students)을
+    // 전부 처리하므로 여기서 별도로 상태를 바꾸지 않는다.
+    void selectClass(body.schoolClass.classId);
+  } catch {
+    if (isStale()) return;
+    ccErrorEl.textContent = '학급을 만들지 못했습니다. 잠시 후 다시 시도해주세요.';
+    ccErrorEl.hidden = false;
+  } finally {
+    if (!isStale()) ccSubmitBtn.disabled = false;
+  }
+}
+
+async function addSingleStudent(): Promise<void> {
+  if (!currentAccessToken || !selectedClassId) return;
+  const studentNo = saStudentNoInput.value.trim();
+  const name = saNameInput.value.trim();
+
+  saErrorEl.hidden = true;
+  if (studentNo.length === 0) {
+    saErrorEl.textContent = '학번을 입력하세요.';
+    saErrorEl.hidden = false;
+    return;
+  }
+  if (name.length === 0) {
+    saErrorEl.textContent = '이름을 입력하세요.';
+    saErrorEl.hidden = false;
+    return;
+  }
+
+  const requestToken = currentAccessToken;
+  const requestClassId = selectedClassId;
+  const isStale = () => requestClassId !== selectedClassId || requestToken !== currentAccessToken;
+
+  saSubmitBtn.disabled = true;
+  const outcome = await postRosterEntries(requestToken, requestClassId, [{ studentNo, name }]);
+  if (isStale()) return;
+  saSubmitBtn.disabled = false;
+
+  if (outcome.kind === 'unauthorized') {
+    resetDashboardState();
+    setUiState('logged-out');
+    return;
+  }
+  if (outcome.kind === 'not-approved') {
+    resetDashboardState();
+    setUiState('not-approved');
+    return;
+  }
+  if (outcome.kind === 'validation-failed') {
+    saErrorEl.textContent = outcome.errors.map((e) => rosterValidationReasonToMessage(e.reason)).join(' ');
+    saErrorEl.hidden = false;
+    return;
+  }
+  if (outcome.kind === 'duplicate-conflict') {
+    saErrorEl.textContent = '같은 학번이 이미 존재합니다.';
+    saErrorEl.hidden = false;
+    return;
+  }
+  if (outcome.kind === 'error') {
+    saErrorEl.textContent = '학생을 등록하지 못했습니다. 잠시 후 다시 시도해주세요.';
+    saErrorEl.hidden = false;
+    return;
+  }
+
+  saForm.reset();
+  appendCreatedStudents(outcome.created);
+}
+
+async function submitBulkRoster(): Promise<void> {
+  if (!currentAccessToken || !selectedClassId) return;
+  if (currentBulkEntries.length === 0) return;
+
+  const requestToken = currentAccessToken;
+  const requestClassId = selectedClassId;
+  const isStale = () => requestClassId !== selectedClassId || requestToken !== currentAccessToken;
+  const entriesToSubmit = currentBulkEntries; // 응답을 기다리는 동안 textarea가 다시 편집될 수 있으므로 스냅샷을 고정한다.
+
+  bulkErrorEl.hidden = true;
+  bulkSuccessEl.hidden = true;
+  bulkSubmitBtn.disabled = true;
+
+  const outcome = await postRosterEntries(requestToken, requestClassId, entriesToSubmit);
+  if (isStale()) return;
+
+  if (outcome.kind === 'unauthorized') {
+    resetDashboardState();
+    setUiState('logged-out');
+    return;
+  }
+  if (outcome.kind === 'not-approved') {
+    resetDashboardState();
+    setUiState('not-approved');
+    return;
+  }
+  if (outcome.kind === 'validation-failed') {
+    // D11-C3 all-or-nothing 계약 — 하나라도 invalid면 아무도 등록되지
+    // 않는다. bulkInput/currentBulkEntries는 그대로 남겨 교사가 표시된
+    // 항목만 고쳐 다시 시도할 수 있게 한다(§13).
+    renderBulkValidationErrors(outcome.errors);
+    bulkSubmitBtn.disabled = false;
+    return;
+  }
+  if (outcome.kind === 'duplicate-conflict') {
+    showBulkGenericError('같은 학번이 이미 존재합니다. 등록되지 않았습니다.');
+    bulkSubmitBtn.disabled = false;
+    return;
+  }
+  if (outcome.kind === 'error') {
+    showBulkGenericError('등록하지 못했습니다. 잠시 후 다시 시도해주세요.');
+    bulkSubmitBtn.disabled = false;
+    return;
+  }
+
+  const count = outcome.created.length;
+  bulkInput.value = '';
+  currentBulkEntries = [];
+  renderBulkPreview();
+  bulkSuccessEl.textContent = `${count}명이 등록되었습니다.`;
+  bulkSuccessEl.hidden = false;
+  appendCreatedStudents(outcome.created);
 }
 
 // Timeline 이벤트를 시간순(오래된 것 → 최신, 서버가 이미 이 순서로 정렬해
@@ -609,6 +990,23 @@ async function selectClass(classId: string): Promise<void> {
   if (!currentAccessToken) return;
   const requestToken = currentAccessToken; // 이 요청이 시작된 시점의 세션 — 이후 로그아웃/재로그인과 구분하는 데 쓴다.
   selectedClassId = classId;
+  // D11-C4: 선택된 학급 코드는 학생 목록 fetch 성공 여부와 무관하게 즉시
+  // 보여준다 — currentClasses에 이미 있는 값이므로 별도 조회가 필요 없다.
+  // 학생 목록 fetch가 실패해도(네트워크 오류 등) 교사가 계속 로스터를
+  // 관리할 수 있어야 하므로, 이 두 섹션의 표시 여부는 ApprovedSubState가
+  // 아니라 "학급이 선택되어 있는가"로만 관리한다(feedbackSectionEl/
+  // aiSectionEl과 동일한 독립 축 패턴).
+  const cls = currentClasses.find((c) => c.classId === classId);
+  selectedClassInfoEl.hidden = false;
+  selectedClassCodeEl.textContent = cls ? cls.classCode : '';
+  rosterSectionEl.hidden = false;
+  saForm.reset();
+  saErrorEl.hidden = true;
+  bulkInput.value = '';
+  currentBulkEntries = [];
+  renderBulkPreview();
+  bulkErrorEl.hidden = true;
+  bulkSuccessEl.hidden = true;
   // 학급이 바뀌면 이전에 선택했던 학생/Timeline은 더 이상 유효하지 않다 —
   // 0-D10-D 확정 UI 요구사항("학급 변경 시 selectedStudentId와 Timeline
   // state를 초기화한다").
@@ -987,6 +1385,51 @@ async function loadTeacherClasses(accessToken: string): Promise<void> {
     showApprovedError('담당 학급을 불러오지 못했습니다.', () => void loadTeacherClasses(accessToken));
   }
 }
+
+// D11-C4: 학급 생성 + 로스터(단건/bulk) 등록 이벤트 바인딩. 폼 submit은
+// 기본 페이지 이동을 막아야 하므로 preventDefault()를 먼저 호출한다
+// (다른 곳의 button[type=button] 클릭 핸들러와 달리 이 두 개만 <form>
+// submit 이벤트를 쓴다 — Enter 키로도 제출 가능하게 하기 위함).
+classCreateForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  void createClass();
+});
+
+saForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  void addSingleStudent();
+});
+
+// 입력 즉시 미리보기를 갱신한다(§10) — 서버로는 아직 아무것도 보내지
+// 않는다. 이전 오류/성공 메시지는 입력이 바뀌는 순간 지운다.
+bulkInput.addEventListener('input', () => {
+  currentBulkEntries = parseRosterPasteText(bulkInput.value);
+  bulkErrorEl.hidden = true;
+  bulkSuccessEl.hidden = true;
+  renderBulkPreview();
+});
+
+bulkSubmitBtn.addEventListener('click', () => {
+  void submitBulkRoster();
+});
+
+// 실패해도 조용히 무시한다 — 학급 코드 자체가 이미 화면에 명확한 텍스트로
+// 표시되어 있으므로 교사가 직접 선택해 복사할 수 있다(§7: QR/공유링크 등
+// 새 기능을 추가하지 않고, 이미 프로젝트가 쓰는 Clipboard API만 재사용).
+copyClassCodeBtn.addEventListener('click', () => {
+  const code = selectedClassCodeEl.textContent ?? '';
+  if (code.length === 0) return;
+  const original = copyClassCodeBtn.textContent;
+  navigator.clipboard.writeText(code).then(
+    () => {
+      copyClassCodeBtn.textContent = '복사됨';
+      setTimeout(() => {
+        copyClassCodeBtn.textContent = original;
+      }, 1500);
+    },
+    () => {}
+  );
+});
 
 retryBtn.addEventListener('click', () => {
   if (retryAction) retryAction();
