@@ -29,6 +29,12 @@
 // learning-event-sink.ts의 ALLOWED_EVENT_TYPES에도 feedback-retry를 추가해
 // 목록 일관성은 유지한다(향후 다른 경로가 picosim:event로 이 타입을 쏘더라도
 // sink가 조용히 버리지 않도록).
+//
+// D12-1C4: 이 direct 경로에도 D12-1B의 clientEventId idempotency를
+// 적용한다 — response가 유실돼도(서버는 저장에 성공했지만 학생 브라우저가
+// 응답을 못 받은 경우) 같은 버튼을 다시 눌렀을 때 중복 learning_event가
+// 생기지 않는다. learning-event-sink.ts의 durable queue로 이 경로를
+// 옮기지는 않는다(§6 — 여전히 direct, synchronous UX를 유지한다).
 type StudentFeedbackItem = { id: string; content: string; createdAt: string; updatedAt: string };
 type StudentFeedbackResponse = { status: 'ok'; feedback: StudentFeedbackItem[] } | { status: string };
 
@@ -75,18 +81,44 @@ function getCurrentActivityId(): string | null {
   return cur?.dataset.m || null;
 }
 
+// D12-1C4: 이 버튼 인스턴스 하나("하나의 logical feedback-retry action")에
+// 대응하는 clientEventId를 보관한다 — render()가 feedback item마다 하나씩
+// 새로 만들어 handleRetryClick()과 공유한다. localStorage 등 durable
+// storage는 쓰지 않는다(§10 범위 밖 — 페이지를 새로고침하면 이 상태는
+// 사라지고, 다음 렌더의 새 버튼·새 state가 자연히 새로운 logical action이
+// 된다). learning-event-sink.ts의 durable queue와도 통합하지 않는다(§6).
+type RetryState = { clientEventId: string | null };
+
 // [확인하고 다시 해보기] 클릭 처리. 성공/실패를 이 버튼 하나에만 반영한다
 // — 카드 전체(loading/empty/error/result)나 다른 feedback 항목에는 영향을
 // 주지 않는다. 이 상태는 세션(현재 페이지 렌더) 동안만 유지되는 순수 UI
 // 상태다 — DB에 read/unread로 저장하지 않고, localStorage에도 저장하지
 // 않는다(요구사항 §9/§10 그대로).
-async function handleRetryClick(feedbackId: string, btn: HTMLButtonElement, msgEl: HTMLElement): Promise<void> {
+//
+// D12-1C4: focused idempotency test(clientEventId 생성/재사용 경계)를 위해
+// export한다 — render()를 거친 실제 DOM 렌더링 없이 이 함수 하나만 직접
+// 호출해 검증할 수 있게 하기 위함이다(이 프로젝트의 "새 DOM test 환경을
+// 추가하지 않는다" 원칙을 지키면서 — learning-event-sink.test.ts와 동일한
+// 최소 fake-global 방식을 쓴다).
+export async function handleRetryClick(feedbackId: string, btn: HTMLButtonElement, msgEl: HTMLElement, state: RetryState): Promise<void> {
   if (btn.disabled) return; // 중복 클릭 방지
   const activityId = getCurrentActivityId();
   if (!activityId) {
     msgEl.textContent = '지금은 다시 해볼 수 없어요. 잠시 후 다시 시도해 주세요.';
     return;
   }
+
+  // D12-1C4 §4: "하나의 logical event"는 이 버튼에 대한 첫 클릭부터
+  // 성공하거나(버튼이 영구히 disabled됨) 학생이 포기할 때까지다. 실패 후
+  // 같은 버튼을 다시 클릭하는 것은 response/network 불확실성에 대한
+  // retry이므로 같은 clientEventId를 재사용한다(§8 response-loss 시나리오)
+  // — 여기서 매번 새 UUID를 만들지 않는다. 이 렌더가 통째로 다시
+  // 그려지면(F5 등 §9) render()가 새 state 객체를 새로 만들어 주므로,
+  // 그건 자연히 새로운 logical action이 되어 새 UUID를 받는다.
+  if (!state.clientEventId) {
+    state.clientEventId = crypto.randomUUID();
+  }
+  const clientEventId = state.clientEventId;
 
   const originalLabel = btn.textContent;
   btn.disabled = true;
@@ -96,17 +128,22 @@ async function handleRetryClick(feedbackId: string, btn: HTMLButtonElement, msgE
     const res = await fetch('/api/events', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activityId, eventType: 'feedback-retry', payload: { feedbackId } }),
+      body: JSON.stringify({ activityId, eventType: 'feedback-retry', payload: { feedbackId }, clientEventId }),
     });
     if (!res.ok) {
-      // 401/400/500 등 서버 세부사항을 구분해 보여주지 않는다 — 다른
-      // 학생/feedback 정보를 노출하지 않는 generic error UX(요구사항
-      // §6/§10).
+      // 401/400/500(409 conflict 포함) 등 서버 세부사항을 구분해 보여주지
+      // 않는다 — 다른 학생/feedback 정보를 노출하지 않는 generic error
+      // UX(요구사항 §6/§10). D12-1B 계약상 409는 같은 clientEventId가 다른
+      // 내용과 충돌했다는 뜻(bug/unexpected state, §7)이지만, 자동으로 새
+      // UUID를 만들어 재전송하지 않는다 — clientEventId는 그대로 두고,
+      // 학생이 다시 누르면 여전히 같은 값으로 재시도한다(§7).
       btn.disabled = false;
       btn.textContent = originalLabel;
       msgEl.textContent = '지금은 다시 해볼 수 없어요. 잠시 후 다시 시도해 주세요.';
       return;
     }
+    // D12-1B 계약: res.ok(200)는 created/duplicate 둘 다를 의미하고, 둘 다
+    // 동일하게 성공으로 취급한다(§7 — duplicate는 사용자 오류가 아니다).
     btn.textContent = '확인함 · 다시 해보세요';
     // 성공 후에도 disabled 상태를 유지한다 — 이번 렌더 세션 동안의
     // 중복 제출만 막을 뿐, 페이지를 새로고침하면 이 상태는 사라진다
@@ -143,7 +180,12 @@ function render(feedback: StudentFeedbackItem[]): void {
     const retryMsgP = document.createElement('p');
     retryMsgP.className = 'muted';
 
-    retryBtn.addEventListener('click', () => void handleRetryClick(f.id, retryBtn, retryMsgP));
+    // D12-1C4: 이 feedback item(이 버튼 인스턴스)에 대응하는 logical
+    // action 하나의 clientEventId를 보관한다 — 클릭 핸들러 밖에서 만들어야
+    // 실패 후 재클릭마다 재사용된다(핸들러 안에서 매번 새로 만들면 매
+    // 클릭이 새 logical event가 되어버린다).
+    const retryState: RetryState = { clientEventId: null };
+    retryBtn.addEventListener('click', () => void handleRetryClick(f.id, retryBtn, retryMsgP, retryState));
 
     li.appendChild(contentP);
     li.appendChild(metaP);
