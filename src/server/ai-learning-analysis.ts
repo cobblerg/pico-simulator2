@@ -54,7 +54,24 @@ const MAX_FEEDBACK_LENGTH = 500;
 // 상향한 뒤 Production에서 정상 동작 확인됨(모델/프롬프트/스키마 등
 // 다른 설정은 그대로). 원인 조사에 쓰인 임시 상세 진단 로그는 원인 확정
 // 후 제거했다(logAIProviderFailure만 상시 운영 로그로 유지).
-const MAX_OUTPUT_TOKENS = 2000;
+//
+// BUG-D11-B9-AI-Output-01(Production, 2026-09-27): D11-B9가 output
+// schema에 helpUsage/retryChange/teacherCheckPoints 3개 필드를 추가하면서
+// 최대 출력 텍스트 길이가 이전(summary 200 + observations 5*150=750 +
+// suggestedFeedback 500 ≈ 1450자)보다 크게 늘었다(+helpUsage 200
+// +retryChange 200 +teacherCheckPoints 5*150=750 ≈ 총 2600자, 약 1.8배).
+// 실제로 이 시점 이후 'malformed AI output: invalid JSON' 오류가
+// Production에서 발생했다(§4 assertResponseComplete가 다음부터 이걸
+// incomplete 오류와 구분해줄 것이다). reasoning 토큰 소비는 output
+// schema 크기보다는 입력 이벤트 분석 복잡도에 좌우되는 고정비에 가깝다고
+// 보고, 늘어난 부분은 output 길이에 비례한 부분만 증분한다는 가정하에
+// 2000 → 3000(+50%)으로 최소 상향한다. 무작정 4000으로 올리지 않는
+// 이유는 비용 증가를 스키마 크기 증가분(~1.8배)보다 더 크게 만들지
+// 않기 위함이다 — 이 값은 실제 gpt-5-mini 호출로 측정한 것이 아니라
+// 위 문자 수 비율에 근거한 공학적 추정이므로, Production 배포 후 로그에서
+// 'incomplete AI output: max_output_tokens'가 다시 나타나는지 반드시
+// 확인해야 한다.
+const MAX_OUTPUT_TOKENS = 3000;
 const AI_TIMEOUT_MS = 25_000;
 
 // ---------- AI 입력 이벤트 ----------
@@ -256,6 +273,26 @@ export function logAIProviderFailure(error: unknown): void {
   console.error('[ai-analysis] provider call failed', { name, status, code, type, requestId, message });
 }
 
+// BUG-D11-B9-AI-Output-01(Production, 2026-09-27): OpenAI Responses API가
+// max_output_tokens 등으로 응답을 중간에 끊으면(response.status ===
+// 'incomplete') output_text가 완결되지 않은 문자열일 수 있고, 이 경우
+// 그냥 JSON.parse에 맡기면 analyzeLearningPattern()의 'malformed AI
+// output: invalid JSON'과 구분되지 않아 서버 로그만으로 원인을 알 수
+// 없다. openai SDK(node_modules/openai@7.23.0,
+// resources/responses/responses.d.ts)의 실제 타입 기준으로
+// response.status?: ResponseStatus('completed'|'failed'|'in_progress'|
+// 'cancelled'|'queued'|'incomplete')와
+// response.incomplete_details: { reason?: 'max_output_tokens'|
+// 'max_messages'|'content_filter'|'steered' } | null이 존재하므로, 이
+// 값을 JSON.parse 이전에 명시적으로 확인해 별도 Error로 구분한다 — raw
+// output/error 세부 내용은 여전히 로그에 남기지 않는다(logAIProviderFailure는
+// error.message만 읽는다).
+export function assertResponseComplete(status: string | undefined, incompleteReason: string | undefined): void {
+  if (status === 'incomplete') {
+    throw new Error(`incomplete AI output: ${incompleteReason ?? 'unknown_reason'}`);
+  }
+}
+
 // 실제 OpenAI Responses API + Structured Outputs 호출. OPENAI_API_KEY가
 // 없으면 호출 시점에 즉시 실패한다(student-session.ts의 getSecret()과
 // 동일한 fail-closed 패턴 — 모듈 로드 시점이 아니라 실제로 호출될 때
@@ -286,6 +323,7 @@ export function createDefaultAIProvider(): AIProviderCall {
       },
       { timeout: timeoutMs }
     );
+    assertResponseComplete(response.status, response.incomplete_details?.reason);
     return response.output_text;
   };
 }
