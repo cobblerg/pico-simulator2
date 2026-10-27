@@ -2309,3 +2309,90 @@ Production smoke(idempotent duplicate/conflict, browser-level): **NOT YET — D1
 
 ### Next Direction
 **D12-1C — Durable Queue Policy Review**(read-only design gate, 구현 전) — 위 "Important D12-1C Design Warning"에서 제기한 정책들을 먼저 확정한 뒤에 durable queue/client clientEventId 생성을 설계한다.
+
+---
+
+## D12-1C — Durable Learning Event Queue & Client Idempotency
+
+### Status
+IMPLEMENTED (C1~C4 커밋 완료, `main` 반영) — Production smoke는 이 항목 작성 시점에 **아직 수행/확인하지 않았다**.
+
+### Purpose
+D12-1B가 server/DB 경계에서 `clientEventId` idempotency를 완성했지만, Production의 client는 여전히 `clientEventId`를 보내지 않았고 전송 실패 시 메모리 큐에서 이벤트를 포기했다. D12-1C는 D12-1C0(설계 게이트)에서 확정한 정책에 따라 **client delivery reliability**를 구현한다: 이벤트를 먼저 localStorage에 durable하게 기록한 뒤 전송하고(persist-before-send), 같은 `clientEventId`로 재시도해도 서버에서 duplicate row가 생기지 않게 한다. 핵심 원칙은 **NO SILENT LOSS**(전송 못 한 학습기록을 조용히 지우지 않는다)와 **NO MISATTRIBUTION**(다른 학생 큐로 잘못 귀속하지 않는다)이다.
+
+### Baseline
+구현 시작 baseline: `823cbd8`(D12-1B Idempotency Deployment Close 문서 커밋)
+
+### Commits
+| 단계 | short | message | 변경 |
+|---|---|---|---|
+| C1 | `c56728d` | `feat: add durable learning event queue core` | 3 files, +548/-40 |
+| C2 | `2d408ad` | `feat: preserve durable events across student sessions` | 3 files, +428/-50 |
+| C3 | `6585357` | `feat: bound durable event retention` | 3 files, +432/-20 |
+| C4 | `f12b956` | `feat: make feedback retry events idempotent` | 2 files, +332/-6 |
+
+full hash: `c56728d3cbacc25daf29251a7281151257795977`, `2d408ad0f01db5909aafb844aa95d419d24d62fa`, `65853570d3e18aaae5a0d4d61a094a52222db823`, `f12b956779e9ccd0bec1503a0bba237d7c689e25` (모두 2026-09-27, 19:17~20:02 KST)
+
+### D12-1C1 — Durable Queue Core
+- `src/ui/learning-event-sink.ts`: 기존 in-memory 큐를 **localStorage 기반 durable queue**로 교체. partition key는 `picosim:event-queue:${enrollmentId}`이며, 이 값은 "이 브라우저가 어느 큐를 재시도해도 되는가"를 정하는 로컬 게이트일 뿐 서버 identity로 전송되지 않는다.
+- localStorage가 유일한 source of truth — 별도의 지속적인 in-memory 배열을 두지 않고 매 연산마다 다시 읽고 쓴다. ACK 제거는 position 기반 `slice(1)`이 아니라 **특정 `clientEventId`만 필터링**하여 멀티탭 lost-update를 막는다.
+- 이벤트마다 `crypto.randomUUID()`로 `clientEventId`를 생성하고 `{ activityId, eventType, payload, clientEventId }`를 POST(배열/batch 없음). 저장 shape은 `clientEventId/activityId/eventType/payload/createdAt`뿐이며 학생 이름·번호·classCode·enrollmentId 등은 저장하지 않는다.
+- **persist-before-send**: localStorage 기록이 실패하면 전송도 시도하지 않는다. 200(created/duplicate)은 모두 ACK, 400/409 등 4xx는 해당 이벤트만 제거(`console.warn`), 5xx/네트워크 실패는 이벤트를 큐 맨 앞에 보존한 채 처리를 멈춘다(순서 보존).
+- 동작 변경 기록: 기존에는 `MAX_RETRIES`(최초 포함 3회) 소진 시 이벤트를 포기했으나, durable queue에서는 **버리지 않고 보존**하며 다음 enqueue/재활성화 때 다시 시도한다.
+- 손상된 저장값(invalid JSON, 배열 아님, item shape 불량)은 앱을 깨뜨리지 않으며 item 단위로 valid한 것만 보존한다.
+- `src/ui/student-entry-ui.ts`: 정상 입장 직후와 F5로 기존 StudentContext를 이어받을 때 `activateLearningEventQueue(enrollmentId)`를 `enableLearningEventSink()`보다 먼저 호출.
+
+### D12-1C2 — Session Boundary & 401 Policy
+- **401 정책 변경(핵심)**: 이전에는 401 시 큐를 비웠으나, 이제 큐를 **삭제하지 않고** 해당 enrollment의 자동 재시도만 suspend한다(`suspendedEnrollmentId`). suspend 중에도 새 이벤트는 durable queue에 쌓이며 전송은 하지 않는다. 같은 enrollment가 서버 검증을 거쳐 다시 `activateLearningEventQueue()`되면 재개된다.
+- 401 응답 대기 중 같은 enrollment가 재활성화된 경우를 위해 enrollmentId별 `resumeTokens`(재활성화 세대 카운터)를 도입 — 활성화와 401 도착의 순서에 의존하지 않고 같은 item·같은 `clientEventId`로 즉시 재시도.
+- 진행 중 처리 추적을 전역 변수 하나에서 **enrollmentId별 `processingPromises` Map**으로 변경. 학생 A→B 전환 시 A의 pending 요청이 B의 큐 처리를 막던 버그를 디버그로 재현·수정했다. 다른 enrollment의 `picosim:event-queue:*` key는 읽거나 전송하거나 지우지 않는다(cross-enrollment isolation).
+- 큐가 비어 있을 때 `processQueue()`가 settle된 promise를 `processingPromises`에 남겨 직후 enqueue를 막는 경합을 재현하고, 빈 큐는 promise 캐싱 없이 즉시 반환하도록 수정.
+- **로그아웃 flush**: `flushLearningEventQueue(enrollmentId)` 신규 export — 로그아웃 API 호출 **전** 아직 유효한 세션으로 bounded(2초, `LOGOUT_FLUSH_TIMEOUT_MS`) flush를 시도한다. 실패/timeout이어도 로그아웃은 진행하고 남은 큐는 보존된다. 로그아웃이 실패해 같은 학생이 계속 쓰는 경우 같은 partition을 재활성화한다.
+
+### D12-1C3 — Bounded Retention & Non-silent Failure
+- 큐 상한 `MAX_QUEUE_LENGTH = 50`. **정책 변경**: 가득 찼을 때 기존의 "가장 오래된 item 삭제(oldest drop)"를 금지하고, 이미 durable한 item은 보존한 채 **새 이벤트를 reject**한다(network로 우회 전송도 하지 않음 — persist-before-send 유지).
+- 보존 기간 `RETENTION_MS = 7일`, **item 단위**로만 판단(partition 전체 만료 금지). `pruneQueue()`는 `activateLearningEventQueue()`에서만 lazy하게 실행되며 다른 enrollment의 key는 열지 않는다.
+- 미래로 조작/오차가 난 `createdAt`이 무기한 보존 우회가 되지 않도록, 처음 발견한 pruning 시점에 `createdAt`을 now로 자체 교정(1회성).
+- 손상(corrupt)/만료/overflow/storage 기록 실패는 모두 학습기록 소실이므로 **조용히 넘기지 않고** `picosim:event-delivery-warning` CustomEvent(`reason`: `storage-write-failed` | `queue-overflow` | `expired-events` | `corrupt-events`)로 알린다. detail에는 reason만 싣고 payload/`clientEventId`는 포함하지 않는다. 같은 enrollment·같은 reason은 10초(`WARNING_THROTTLE_MS`) 안에 재알림하지 않는다.
+- `src/ui/app.ts`: 위 이벤트를 받아 기존 `toast(message, 'warn')`로 표시(새 UI 없음). `queue-overflow`는 "학습 기록 저장이 지연되고 있어요…", 그 외는 "일부 학습 기록을 서버에 저장하지 못했어요." 문구.
+- 완전히 손상된 JSON은 개별 item을 구분할 수 없으므로 pruning에서 임의 삭제/경고하지 않고 그대로 둔다.
+
+### D12-1C4 — Feedback Retry Idempotency
+- `src/ui/student-feedback.ts`: `feedback-retry` 이벤트(`/api/events` direct POST 경로)에도 `clientEventId`를 적용. 버튼 인스턴스마다 `RetryState { clientEventId }`를 `render()`에서 만들고, 첫 클릭 때 UUID를 생성해 **실패 후 재클릭에도 같은 값을 재사용**한다 → 서버는 저장했지만 응답이 유실된 경우에도 duplicate `learning_event`가 생기지 않는다.
+- 200은 created/duplicate 모두 성공으로 취급. 409(같은 `clientEventId`가 다른 내용과 충돌)는 bug/unexpected state로 보고 generic 오류 문구를 표시하되, **자동으로 새 UUID를 만들어 재전송하지 않는다.**
+- 페이지를 새로고침하면 `render()`가 새 state를 만들어 새 logical action이 된다. 이 경로는 durable queue로 옮기지 않았고 localStorage도 쓰지 않는다(direct·synchronous UX 유지).
+- 테스트를 위해 `handleRetryClick()`을 export하고 시그니처에 `state` 인자를 추가(내부 호출부는 `render()` 하나).
+
+### Files Changed (`823cbd8..f12b956`)
+- `src/ui/learning-event-sink.ts` (C1·C2·C3)
+- `src/ui/student-entry-ui.ts` (C1·C2)
+- `src/ui/app.ts` (C3)
+- `src/ui/student-feedback.ts` (C4)
+- 테스트: `tests/ui/learning-event-sink.test.ts`(C1·C2·C3 누적), `tests/ui/student-feedback.test.ts`(C4)
+- `supabase/`, `api/`, `src/server/`는 변경 없음 — **migration 없음, server 계약 변경 없음**(D12-1B 계약 그대로 사용).
+
+### Verification
+- 자동 테스트: 이 항목 작성 시점에 `npm test` 실행 결과 **18 files / 160 tests PASS**. D12-1B 종료 시점(16 files / 110 tests) 대비 **+2 files / +50 tests**, 기존 테스트 회귀 없음. (단계별 테스트 수는 이 항목에서 별도로 집계하지 않았다.)
+- 브라우저 수동 검증 및 Production smoke(응답 유실 후 duplicate retry, 세션 전환, 로그아웃 flush, 경고 토스트)는 **이 항목에서 수행하지 않았다.**
+
+### Backward Compatibility
+- 서버 변경이 없고, D12-1B에서 이미 migration이 적용되어 `clientEventId`를 보내는 client와 새 schema의 조합이 안전하다(D12-1B Backward Compatibility 분석 참고).
+- 기존 sink의 in-memory 큐에 남아 있던 이벤트는 페이지 재로드로 사라지는 구조였으므로 이전 저장 포맷 마이그레이션은 필요 없다. durable key(`picosim:event-queue:*`)는 이번에 새로 도입되었다.
+
+### Behavior Changes to Remember
+- 401 → 큐 비우기 **폐지**, suspend + 보존으로 변경.
+- 큐 overflow → oldest drop **폐지**, newest reject + 경고로 변경.
+- retry 소진 → 포기 **폐지**, 보존 후 다음 시도에서 재개.
+- 학생 화면에 새 UI는 추가되지 않았고, 경고는 기존 toast만 사용한다.
+
+### Deferred
+- retry backoff (현재는 소진 시 곧바로 멈추고 다음 enqueue/활성화에서 재시도)
+- online/offline 이벤트 기반 네트워크 복구 UI
+- 멀티탭 client coordination 고도화(현재는 ACK 시 `clientEventId` 필터링으로 lost-update만 방지)
+- 같은 계정으로 재입장하지 않는 학생의 stale queue에 대한 능동 정리/안내 (현재는 해당 enrollment 재활성화 시에만 lazy pruning)
+- feedback-retry를 durable queue로 통합하는 것
+- Production browser-level smoke (idempotent duplicate/conflict 검증 포함 — D12-1B에서 이 단계 이후로 미룬 항목)
+- Student LLM Coach / class summary / AI cost guard 등 D12-0의 다른 축
+
+### Next Direction
+**D12-1C Production Smoke & Closure** — Production에서 (1) 정상 이벤트 흐름과 교사 Timeline 반영, (2) 네트워크 차단 후 복구 시 durable queue 재전송, (3) feedback-retry 재클릭 시 duplicate 미발생, (4) 로그아웃 flush를 확인한 뒤 이 항목의 Status를 CLOSED로 갱신한다.
