@@ -495,6 +495,12 @@ $<HTMLInputElement>('#pd-file').addEventListener('change', async (e) => {
 
 // ---------- 교사 설정 (SIM-06) ----------
 const teacherEl = $('#teacher');
+// 교사 설정 메뉴는 주소에 ?teacher 를 붙여 연 교사 화면에서만 보인다.
+// 학생 화면(기본 주소)과 학생용 활동·공유 링크(주소의 ? 부분을 포함하지 않음)에서는 숨긴다.
+// 화면에서 숨기는 것일 뿐 권한 확인은 아니다 — 설정은 원래 각 브라우저에만 저장된다.
+const teacherMode = new URLSearchParams(location.search).has('teacher');
+$('#teacher-toggle').hidden = !teacherMode;
+if (!teacherMode) teacherEl.hidden = true;
 $('#teacher-toggle').addEventListener('click', () => {
   const open = teacherEl.hidden;
   teacherEl.hidden = !open;
